@@ -1,0 +1,53 @@
+{
+  "name": "@iapp-technology/ekyc-sdk",
+  "version": "0.1.0",
+  "description": "iApp eKYC Web SDK - Thai document auto-capture (OCR), face active/passive liveness, and face verification.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iapp-technology/iapp-ekyc-sdk",
+    "directory": "web"
+  },
+  "homepage": "https://iapp.co.th/docs/ekyc",
+  "keywords": [
+    "ekyc",
+    "ocr",
+    "liveness",
+    "face-verification",
+    "thai-id",
+    "iapp",
+    "document-capture"
+  ],
+  "main": "./dist/ekyc-sdk.umd.cjs",
+  "module": "./dist/ekyc-sdk.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/ekyc-sdk.js",
+      "require": "./dist/ekyc-sdk.umd.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "build": "vite build && node -e \"require('fs').copyFileSync('dist/ekyc-sdk.umd.cjs','dist/ekyc-sdk.umd.js')\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.35",
+    "@techstark/opencv-js": "^4.12.0-release.1"
+  },
+  "devDependencies": {
+    "jpeg-js": "^0.4.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.3.5",
+    "vite-plugin-dts": "^4.5.4",
+    "vitest": "^3.2.4"
+  }
+}

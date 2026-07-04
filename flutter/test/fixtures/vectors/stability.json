@@ -1,0 +1,49 @@
+{
+  "_comment": "Stability tracker per ALGORITHM.md step 9. frameSize 480x360 (diagonal 600), maxCornerDriftFrac 0.02 (=12px), window 8, trigger >=6 stable. Each frame: accepted quad corners or null (rejected frame). A frame is stable iff accepted AND max corner displacement vs the PREVIOUS ACCEPTED frame < 12px. The first accepted frame has no reference and is NOT stable. expectedTrigger = tracker fires after processing all frames in sequence.",
+  "frameWidth": 480,
+  "frameHeight": 360,
+  "cases": [
+    {
+      "name": "steady_hold_triggers",
+      "frames": [
+        [[100, 100], [380, 102], [378, 260], [98, 258]],
+        [[102, 101], [382, 103], [380, 262], [100, 259]],
+        [[103, 102], [383, 104], [381, 263], [101, 260]],
+        [[104, 102], [384, 104], [382, 263], [102, 260]],
+        [[105, 103], [385, 105], [383, 264], [103, 261]],
+        [[106, 103], [386, 105], [384, 264], [104, 261]],
+        [[107, 104], [387, 106], [385, 265], [105, 262]],
+        [[108, 104], [388, 106], [386, 265], [106, 262]]
+      ],
+      "expectedTrigger": true
+    },
+    {
+      "name": "large_jitter_never_triggers",
+      "frames": [
+        [[100, 100], [380, 100], [380, 260], [100, 260]],
+        [[130, 100], [410, 100], [410, 260], [130, 260]],
+        [[100, 130], [380, 130], [380, 290], [100, 290]],
+        [[130, 130], [410, 130], [410, 290], [130, 290]],
+        [[100, 100], [380, 100], [380, 260], [100, 260]],
+        [[130, 100], [410, 100], [410, 260], [130, 260]],
+        [[100, 130], [380, 130], [380, 290], [100, 290]],
+        [[130, 130], [410, 130], [410, 290], [130, 290]]
+      ],
+      "expectedTrigger": false
+    },
+    {
+      "name": "rejected_frames_break_run",
+      "frames": [
+        [[100, 100], [380, 100], [380, 260], [100, 260]],
+        [[101, 100], [381, 100], [381, 260], [101, 260]],
+        null,
+        [[102, 101], [382, 101], [382, 261], [102, 261]],
+        null,
+        [[103, 101], [383, 101], [383, 261], [103, 261]],
+        null,
+        [[104, 102], [384, 102], [384, 262], [104, 262]]
+      ],
+      "expectedTrigger": false
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "_comment": "Input: 4 unordered [x,y] points. Expected: ordered TL,TR,BR,BL per ALGORITHM.md step 8 (TL=min(x+y), BR=max(x+y), TR=max(x-y), BL=min(x-y)). Identical file lives in flutter/test/fixtures/vectors/.",
+  "cases": [
+    {
+      "name": "axis_aligned_rect_shuffled",
+      "input": [[500, 350], [100, 100], [100, 350], [500, 100]],
+      "expected": [[100, 100], [500, 100], [500, 350], [100, 350]]
+    },
+    {
+      "name": "rotated_quad",
+      "input": [[400, 400], [200, 80], [120, 320], [480, 160]],
+      "expected": [[200, 80], [480, 160], [400, 400], [120, 320]]
+    },
+    {
+      "name": "already_ordered",
+      "input": [[10, 10], [310, 12], [308, 200], [12, 198]],
+      "expected": [[10, 10], [310, 12], [308, 200], [12, 198]]
+    }
+  ]
+}

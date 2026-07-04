@@ -45,5 +45,9 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>This app captures your ID document and face for identity verification.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>This app lets you pick photos for face verification and passive liveness checks.</string>
 </dict>
 </plist>

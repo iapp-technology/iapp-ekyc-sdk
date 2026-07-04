@@ -77,7 +77,8 @@ const liveness = await ekyc.startActiveLiveness({
 });
 ```
 
-Or via `<script>` tag (UMD): `window.IappEkyc`.
+Or via `<script>` tag (UMD): the global `window.IappEkyc` is a namespace —
+instantiate with `new window.IappEkyc.IappEkyc({ apiKey })`.
 
 ## Requirements
 

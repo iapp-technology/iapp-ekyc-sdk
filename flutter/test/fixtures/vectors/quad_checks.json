@@ -1,0 +1,36 @@
+{
+  "_comment": "Quad shape validation per ALGORITHM.md step 8. Points are ordered TL,TR,BR,BL. aspect = mean(top,bottom)/mean(left,right). anglesOk = every interior angle in [60,120] deg. acceptId1 / acceptPassport use target 1.586 / 1.42 with tolerance ±0.25. Angle tolerance for tests: ±0.5 deg.",
+  "cases": [
+    {
+      "name": "id1_rect_400x230",
+      "points": [[0, 0], [400, 0], [400, 230], [0, 230]],
+      "expectedAspect": 1.7391,
+      "expectedAnglesOk": true,
+      "expectedAcceptId1": true,
+      "expectedAcceptPassport": false
+    },
+    {
+      "name": "square_rejected_both",
+      "points": [[0, 0], [300, 0], [300, 300], [0, 300]],
+      "expectedAspect": 1.0,
+      "expectedAnglesOk": true,
+      "expectedAcceptId1": false,
+      "expectedAcceptPassport": false
+    },
+    {
+      "name": "passport_rect_426x300",
+      "points": [[0, 0], [426, 0], [426, 300], [0, 300]],
+      "expectedAspect": 1.42,
+      "expectedAnglesOk": true,
+      "expectedAcceptId1": true,
+      "expectedAcceptPassport": true
+    },
+    {
+      "name": "skewed_45deg_angle_rejected",
+      "points": [[0, 0], [400, 0], [400, 252], [252, 252]],
+      "expectedAnglesOk": false,
+      "expectedAcceptId1": false,
+      "expectedAcceptPassport": false
+    }
+  ]
+}

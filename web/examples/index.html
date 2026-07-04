@@ -1,0 +1,183 @@
+<!doctype html>
+<!--
+  iApp eKYC Web SDK - plain static example (UMD bundle, no bundler).
+
+  How to run:
+    1. cd web && npm install && npm run build     (produces dist/ekyc-sdk.umd.js)
+    2. From the web/ directory serve THIS folder's parent so the relative
+       ../dist/ path resolves, e.g.:
+         npx serve .            (then open http://localhost:3000/examples/)
+       or:
+         npx vite preview       (see vite docs for the served root)
+    3. Camera access (document capture / active liveness) REQUIRES a secure
+       context: use http://localhost or HTTPS. Plain http:// on a LAN IP
+       will fail with an "insecure context" error by design.
+
+  Notes:
+    - OpenCV.js and MediaPipe assets are lazy-loaded from public CDNs on
+      first use (nothing heavy loads until you start a flow). Self-host
+      them via the opencvScriptUrl / assetBaseUrl options if your CSP
+      forbids CDNs (see docs/SECURITY.md).
+    - The UMD bundle exposes the global `IappEkyc`; the class itself is
+      `IappEkyc.IappEkyc`.
+    - NEVER ship a production API key in client-side code. Use the proxy
+      pattern from docs/SECURITY.md (apiKey: '' + baseUrl to your backend).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>iApp eKYC Web SDK — Example</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 760px; padding: 24px; background: #f8fafc; color: #0c4a6e; }
+    h1 { font-size: 22px; }
+    fieldset { border: 1px solid #bae6fd; border-radius: 12px; margin-bottom: 16px; background: #fff; }
+    legend { font-weight: 600; padding: 0 8px; }
+    label { display: inline-block; margin: 4px 12px 4px 0; }
+    input[type="text"], input[type="password"], select { padding: 6px 10px; border: 1px solid #bae6fd; border-radius: 8px; min-width: 220px; }
+    button { margin: 4px 6px 4px 0; padding: 8px 14px; border: none; border-radius: 8px; background: #0284c7; color: #fff; cursor: pointer; font-size: 14px; }
+    button:hover { background: #0369a1; }
+    button.secondary { background: #64748b; }
+    #mount { margin: 16px 0; min-height: 40px; }
+    pre { background: #0c4a6e; color: #e0f2fe; padding: 14px; border-radius: 12px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>iApp eKYC Web SDK — Example</h1>
+
+  <fieldset>
+    <legend>Setup</legend>
+    <label>API key <input type="password" id="apiKey" placeholder="get one at iapp.co.th/control/api-keys" /></label>
+    <label>Locale
+      <select id="locale">
+        <option value="en">English</option>
+        <option value="th">ไทย</option>
+        <option value="zh">中文</option>
+      </select>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Document auto-capture (camera)</legend>
+    <button data-doc="thaiIdFront">Thai ID — front</button>
+    <button data-doc="thaiIdBack">Thai ID — back</button>
+    <button data-doc="thaiIdWithSignature">Thai ID + signature</button>
+    <button data-doc="passport">Passport</button>
+    <button data-doc="thaiDriverLicense">Driver license</button>
+    <button data-doc="bookBank">Book bank</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Face — active liveness (camera)</legend>
+    <button id="btnActiveLiveness">Start active liveness</button>
+    <label><input type="checkbox" id="returnImage" /> return_image</label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Face verification (two files)</legend>
+    <label>File 1 <input type="file" id="face1" accept="image/*" /></label>
+    <label>File 2 <input type="file" id="face2" accept="image/*" /></label>
+    <button id="btnVerify">Verify faces</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Passive liveness (one file)</legend>
+    <label>Selfie <input type="file" id="selfieFile" accept="image/*" /></label>
+    <button id="btnPassive">Check passive liveness</button>
+  </fieldset>
+
+  <div id="mount"></div>
+  <h3>Result</h3>
+  <pre id="result">—</pre>
+
+  <!-- UMD bundle built by `npm run build` -->
+  <script src="../dist/ekyc-sdk.umd.js"></script>
+  <script>
+    const resultEl = document.getElementById('result');
+    const mountEl = document.getElementById('mount');
+
+    function show(value) {
+      resultEl.textContent =
+        typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    }
+
+    function showError(err) {
+      show({
+        error: err?.name ?? 'Error',
+        message: err?.message,
+        statusCode: err?.statusCode ?? null,
+        userMessageKey: err?.userMessageKey ?? null,
+      });
+      console.error(err);
+    }
+
+    function makeSdk() {
+      // UMD global is `IappEkyc` (the exports object); the class is inside.
+      return new IappEkyc.IappEkyc({
+        apiKey: document.getElementById('apiKey').value.trim(),
+        locale: document.getElementById('locale').value,
+        // theme: { primary: '#113F7B', borderRadius: 12 },  // optional
+      });
+    }
+
+    // --- Document capture -------------------------------------------------
+    for (const button of document.querySelectorAll('[data-doc]')) {
+      button.addEventListener('click', async () => {
+        show('Starting camera…');
+        try {
+          const result = await makeSdk().captureDocument({
+            mount: mountEl,
+            documentType: button.dataset.doc,
+            onState: (state) => console.log('[capture state]', state),
+          });
+          show(result.raw);
+        } catch (err) {
+          showError(err);
+        }
+      });
+    }
+
+    // --- Active liveness ---------------------------------------------------
+    document.getElementById('btnActiveLiveness').addEventListener('click', async () => {
+      show('Starting camera…');
+      try {
+        const result = await makeSdk().startActiveLiveness({
+          mount: mountEl,
+          returnImage: document.getElementById('returnImage').checked,
+          onState: (info) => console.log('[liveness state]', info),
+        });
+        show(result.raw);
+      } catch (err) {
+        showError(err);
+      }
+    });
+
+    // --- Face verification --------------------------------------------------
+    document.getElementById('btnVerify').addEventListener('click', async () => {
+      const f1 = document.getElementById('face1').files[0];
+      const f2 = document.getElementById('face2').files[0];
+      if (!f1 || !f2) return show('Please choose two face images first.');
+      show('Uploading…');
+      try {
+        const result = await makeSdk().verifyFaces(f1, f2);
+        show(result.raw);
+      } catch (err) {
+        showError(err);
+      }
+    });
+
+    // --- Passive liveness ----------------------------------------------------
+    document.getElementById('btnPassive').addEventListener('click', async () => {
+      const file = document.getElementById('selfieFile').files[0];
+      if (!file) return show('Please choose a selfie image first.');
+      show('Uploading…');
+      try {
+        const result = await makeSdk().checkPassiveLiveness(file);
+        show(result.raw);
+      } catch (err) {
+        showError(err);
+      }
+    });
+  </script>
+</body>
+</html>

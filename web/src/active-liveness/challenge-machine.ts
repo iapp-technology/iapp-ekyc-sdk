@@ -1,0 +1,470 @@
+/**
+ * Active-liveness challenge state machine — docs/ACTIVE_LIVENESS.md.
+ *
+ * PURE code: no camera or ML imports; the RNG and clock are injectable so
+ * every path is deterministic under test.
+ *
+ * `init → findFace → challenge[0..N-1] → recenter → capture → finalizing
+ *  → done | failed`
+ */
+import type { ChallengeLogWire } from '../core/types';
+
+export type { ChallengeLogWire };
+
+/** Normalized face detector output (docs/ACTIVE_LIVENESS.md). */
+export interface FaceObservation {
+  /** Faces in frame. */
+  count: number;
+  /** + = user turned to THEIR left. */
+  yawDeg: number;
+  /** + = looking up. */
+  pitchDeg: number;
+  rollDeg: number;
+  /** 0..1 */
+  leftEyeOpen: number;
+  /** 0..1 */
+  rightEyeOpen: number;
+  /** 0..1 */
+  smile: number;
+  /** face bbox width / frame width. */
+  faceWidthFrac: number;
+  /** face center distance from oval center / frame width. */
+  centerOffsetFrac: number;
+}
+
+export type ChallengeType = 'blink' | 'turnLeft' | 'turnRight' | 'smile';
+
+/** camelCase code enum -> snake_case wire value. */
+export const CHALLENGE_WIRE_TYPE: Record<ChallengeType, 'blink' | 'turn_left' | 'turn_right' | 'smile'> = {
+  blink: 'blink',
+  turnLeft: 'turn_left',
+  turnRight: 'turn_right',
+  smile: 'smile',
+};
+
+export type MachinePhase =
+  | 'init'
+  | 'findFace'
+  | 'challenge'
+  | 'recenter'
+  | 'capture'
+  | 'finalizing'
+  | 'done'
+  | 'failed';
+
+export type FailReason = 'timeout' | 'tooManyRestarts' | 'cancelled' | 'finalizeError';
+
+export interface CompletedChallenge {
+  type: ChallengeType;
+  issuedAt: number;
+  completedAt: number;
+  passed: boolean;
+}
+
+export interface MachineSnapshot {
+  phase: MachinePhase;
+  /** Consecutive frontal frames held (findFace / recenter). */
+  holdFrames: number;
+  holdTargetFrames: number;
+  /** Index of the current challenge (0-based), -1 before issuance. */
+  challengeIndex: number;
+  challengeCount: number;
+  currentChallenge: ChallengeType | null;
+  /** Restart count of the CURRENT challenge. */
+  restarts: number;
+  failReason: FailReason | null;
+  completedCount: number;
+}
+
+export interface ChallengeMachineConfig {
+  /** N distinct challenges drawn from the pool (default 3). */
+  challengeCount: number;
+  challengePool: ChallengeType[];
+  /** Consecutive frontal frames required (findFace & recenter): 20. */
+  findFaceHoldFrames: number;
+  /** findFace: faceWidthFrac >= 0.25. */
+  minFaceWidthFrac: number;
+  /** findFace: |yaw| < 15 deg. */
+  findFaceMaxAbsYawDeg: number;
+  /** findFace: |pitch| < 12 deg. */
+  findFaceMaxAbsPitchDeg: number;
+  /** findFace: centerOffsetFrac < 0.12. */
+  maxCenterOffsetFrac: number;
+  /** blink: both eyes < 0.2 ... */
+  blinkClosedBelow: number;
+  /** ... THEN both > 0.7 ... */
+  blinkOpenAbove: number;
+  /** ... within 1.5 s of the closed sample. */
+  blinkReopenWindowMs: number;
+  /** turn: yaw delta from baseline >= 18 deg in the required direction. */
+  turnYawDeltaDeg: number;
+  /** turn: then return to |yaw| < 12 deg to complete. */
+  turnReturnAbsYawBelowDeg: number;
+  /** smile: smile >= 0.8 ... */
+  smileAbove: number;
+  /** ... sustained 500 ms. */
+  smileHoldMs: number;
+  /** Anti-cheat: face lost longer than this restarts the challenge (1 s). */
+  faceLostGraceMs: number;
+  /** Anti-cheat: this many restarts of one challenge fails the session (3). */
+  maxRestarts: number;
+  /** 15 s timeout per challenge fails the session. */
+  challengeTimeoutMs: number;
+  /** Injectable RNG in [0,1) — for challenge drawing. */
+  rng: () => number;
+  /** Injectable wall clock (Unix epoch ms). */
+  now: () => number;
+  /** Override the generated UUIDv4 session id (tests). */
+  sessionId?: string;
+}
+
+export const DEFAULT_CHALLENGE_MACHINE_CONFIG: Omit<ChallengeMachineConfig, 'rng' | 'now'> = {
+  challengeCount: 3,
+  challengePool: ['blink', 'turnLeft', 'turnRight', 'smile'],
+  findFaceHoldFrames: 20,
+  minFaceWidthFrac: 0.25,
+  findFaceMaxAbsYawDeg: 15,
+  findFaceMaxAbsPitchDeg: 12,
+  maxCenterOffsetFrac: 0.12,
+  blinkClosedBelow: 0.2,
+  blinkOpenAbove: 0.7,
+  blinkReopenWindowMs: 1500,
+  turnYawDeltaDeg: 18,
+  turnReturnAbsYawBelowDeg: 12,
+  smileAbove: 0.8,
+  smileHoldMs: 500,
+  faceLostGraceMs: 1000,
+  maxRestarts: 3,
+  challengeTimeoutMs: 15_000,
+};
+
+export interface SdkIdentity {
+  name: string;
+  version: string;
+  platform: 'android' | 'ios' | 'web';
+}
+
+interface ChallengeRuntime {
+  type: ChallengeType;
+  /** Last (re)issue time — recorded into the log. */
+  issuedAt: number;
+  /** First issue time — the 15 s timeout budget runs from here. */
+  firstIssuedAt: number;
+  restarts: number;
+  /** Yaw at issue; captured from the first single-face frame after issue. */
+  baselineYaw: number | null;
+  /** blink: time of the most recent both-eyes-closed sample. */
+  blinkClosedAt: number | null;
+  /** turn: the >= 18 deg excursion has been seen. */
+  turned: boolean;
+  /** smile: start of the current continuous >= 0.8 run. */
+  smileSince: number | null;
+}
+
+function uuidV4(rng: () => number): string {
+  const g = globalThis as { crypto?: { randomUUID?: () => string } };
+  if (g.crypto?.randomUUID) return g.crypto.randomUUID();
+  // RFC 4122 v4 via the injected RNG (non-crypto fallback; the session id
+  // is a correlation id, not a secret).
+  const hex = '0123456789abcdef';
+  let out = '';
+  for (let i = 0; i < 36; i++) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) out += '-';
+    else if (i === 14) out += '4';
+    else if (i === 19) out += hex[(Math.floor(rng() * 16) & 0x3) | 0x8];
+    else out += hex[Math.floor(rng() * 16) & 0xf];
+  }
+  return out;
+}
+
+export class ChallengeMachine {
+  private readonly cfg: ChallengeMachineConfig;
+  private phase: MachinePhase = 'init';
+  private holdFrames = 0;
+  private challenges: ChallengeType[] = [];
+  private index = -1;
+  private current: ChallengeRuntime | null = null;
+  private lastFaceSeenAt: number | null = null;
+  private completed: CompletedChallenge[] = [];
+  private startedAtMs = 0;
+  private finishedAtMs = 0;
+  private failReason: FailReason | null = null;
+  readonly sessionId: string;
+
+  constructor(config: Partial<ChallengeMachineConfig> = {}) {
+    this.cfg = {
+      ...DEFAULT_CHALLENGE_MACHINE_CONFIG,
+      rng: Math.random,
+      now: Date.now,
+      ...config,
+    };
+    if (this.cfg.challengeCount > this.cfg.challengePool.length) {
+      throw new Error('challengeCount cannot exceed the challenge pool size');
+    }
+    this.sessionId = this.cfg.sessionId ?? uuidV4(this.cfg.rng);
+  }
+
+  /** init -> findFace. Records `started_at`. */
+  start(): void {
+    if (this.phase !== 'init') return;
+    this.phase = 'findFace';
+    this.startedAtMs = this.cfg.now();
+    this.holdFrames = 0;
+  }
+
+  /** Feed one processed FaceObservation. Returns the new snapshot. */
+  process(obs: FaceObservation): MachineSnapshot {
+    switch (this.phase) {
+      case 'findFace':
+      case 'recenter':
+        this.processHold(obs);
+        break;
+      case 'challenge':
+        this.processChallenge(obs);
+        break;
+      default:
+        break; // init/capture/finalizing/done/failed ignore observations
+    }
+    return this.snapshot();
+  }
+
+  get state(): MachineSnapshot {
+    return this.snapshot();
+  }
+
+  get completedChallenges(): readonly CompletedChallenge[] {
+    return this.completed;
+  }
+
+  get startedAt(): number {
+    return this.startedAtMs;
+  }
+
+  get finishedAt(): number {
+    return this.finishedAtMs;
+  }
+
+  /** Orchestrator hooks for the phases after `capture`. */
+  markFinalizing(): void {
+    if (this.phase === 'capture') this.phase = 'finalizing';
+  }
+
+  markDone(): void {
+    if (this.phase === 'finalizing') this.phase = 'done';
+  }
+
+  markFailed(reason: FailReason): void {
+    this.fail(reason);
+  }
+
+  /**
+   * Serialize the wire-format challenge log (docs/ACTIVE_LIVENESS.md).
+   * Timestamps are the REAL wall-clock times recorded during the session.
+   */
+  buildChallengeLog(sdk: SdkIdentity): ChallengeLogWire {
+    return {
+      session_id: this.sessionId,
+      sdk: { name: sdk.name, version: sdk.version, platform: sdk.platform },
+      started_at: this.startedAtMs,
+      finished_at: this.finishedAtMs !== 0 ? this.finishedAtMs : this.cfg.now(),
+      challenges: this.completed.map((c) => ({
+        type: CHALLENGE_WIRE_TYPE[c.type],
+        issued_at: c.issuedAt,
+        completed_at: c.completedAt,
+        passed: c.passed,
+      })),
+    };
+  }
+
+  // ------------------------------------------------------------------ //
+
+  private snapshot(): MachineSnapshot {
+    return {
+      phase: this.phase,
+      holdFrames: this.holdFrames,
+      holdTargetFrames: this.cfg.findFaceHoldFrames,
+      challengeIndex: this.index,
+      challengeCount: this.cfg.challengeCount,
+      currentChallenge: this.current?.type ?? null,
+      restarts: this.current?.restarts ?? 0,
+      failReason: this.failReason,
+      completedCount: this.completed.length,
+    };
+  }
+
+  /** findFace acceptance predicate (also used for recenter). */
+  private meetsFrontalHold(obs: FaceObservation): boolean {
+    return (
+      obs.count === 1 &&
+      obs.faceWidthFrac >= this.cfg.minFaceWidthFrac &&
+      Math.abs(obs.yawDeg) < this.cfg.findFaceMaxAbsYawDeg &&
+      Math.abs(obs.pitchDeg) < this.cfg.findFaceMaxAbsPitchDeg &&
+      obs.centerOffsetFrac < this.cfg.maxCenterOffsetFrac
+    );
+  }
+
+  private processHold(obs: FaceObservation): void {
+    if (this.meetsFrontalHold(obs)) this.holdFrames += 1;
+    else this.holdFrames = 0;
+
+    if (this.holdFrames >= this.cfg.findFaceHoldFrames) {
+      if (this.phase === 'findFace') {
+        this.challenges = this.drawChallenges();
+        this.index = 0;
+        this.phase = 'challenge';
+        this.issueChallenge(obs);
+      } else {
+        // recenter complete -> ready for best-frame capture.
+        this.phase = 'capture';
+        this.finishedAtMs = this.cfg.now();
+      }
+      this.holdFrames = 0;
+    }
+  }
+
+  /** Draw N DISTINCT challenges uniformly at random from the pool. */
+  private drawChallenges(): ChallengeType[] {
+    const pool = [...this.cfg.challengePool];
+    const drawn: ChallengeType[] = [];
+    for (let i = 0; i < this.cfg.challengeCount && pool.length > 0; i++) {
+      const r = this.cfg.rng();
+      const idx = Math.min(pool.length - 1, Math.max(0, Math.floor(r * pool.length)));
+      drawn.push(pool.splice(idx, 1)[0]);
+    }
+    return drawn;
+  }
+
+  private issueChallenge(obs: FaceObservation | null): void {
+    const t = this.cfg.now();
+    this.current = {
+      type: this.challenges[this.index],
+      issuedAt: t,
+      firstIssuedAt: t,
+      restarts: 0,
+      baselineYaw: obs !== null && obs.count === 1 ? obs.yawDeg : null,
+      blinkClosedAt: null,
+      turned: false,
+      smileSince: null,
+    };
+    this.lastFaceSeenAt = t;
+  }
+
+  /** Re-issue the current challenge, keeping restarts + timeout budget. */
+  private restartCurrentChallenge(): void {
+    const cur = this.current;
+    if (!cur) return;
+    cur.restarts += 1;
+    if (cur.restarts >= this.cfg.maxRestarts) {
+      this.fail('tooManyRestarts');
+      return;
+    }
+    const t = this.cfg.now();
+    cur.issuedAt = t; // log records the (re)issue of the passing attempt
+    cur.baselineYaw = null; // re-captured from the next single-face frame
+    cur.blinkClosedAt = null;
+    cur.turned = false;
+    cur.smileSince = null;
+    this.lastFaceSeenAt = t;
+  }
+
+  private processChallenge(obs: FaceObservation): void {
+    const cur = this.current;
+    if (!cur) return;
+    const t = this.cfg.now();
+
+    // 15 s per-challenge timeout, measured from the FIRST issuance so
+    // restarts cannot stretch the session budget indefinitely.
+    if (t - cur.firstIssuedAt >= this.cfg.challengeTimeoutMs) {
+      this.fail('timeout');
+      return;
+    }
+
+    // Anti-cheat: multiple faces -> immediate restart.
+    if (obs.count > 1) {
+      this.restartCurrentChallenge();
+      return;
+    }
+    // Anti-cheat: face lost for more than the grace period -> restart.
+    if (obs.count === 0) {
+      if (this.lastFaceSeenAt !== null && t - this.lastFaceSeenAt > this.cfg.faceLostGraceMs) {
+        this.restartCurrentChallenge();
+      }
+      return;
+    }
+
+    this.lastFaceSeenAt = t;
+    if (cur.baselineYaw === null) cur.baselineYaw = obs.yawDeg;
+
+    let completedNow = false;
+    switch (cur.type) {
+      case 'blink': {
+        const closed =
+          obs.leftEyeOpen < this.cfg.blinkClosedBelow &&
+          obs.rightEyeOpen < this.cfg.blinkClosedBelow;
+        const open =
+          obs.leftEyeOpen > this.cfg.blinkOpenAbove &&
+          obs.rightEyeOpen > this.cfg.blinkOpenAbove;
+        if (closed) {
+          // Track the most recent closed sample; the reopen window runs
+          // from here. A static closed-eyes photo never satisfies `open`,
+          // so the mandatory closed->open transition cannot be spoofed.
+          cur.blinkClosedAt = t;
+        } else if (
+          open &&
+          cur.blinkClosedAt !== null &&
+          t - cur.blinkClosedAt <= this.cfg.blinkReopenWindowMs
+        ) {
+          completedNow = true;
+        }
+        break;
+      }
+      case 'turnLeft':
+      case 'turnRight': {
+        const baseline = cur.baselineYaw ?? obs.yawDeg;
+        const delta = obs.yawDeg - baseline;
+        const reached =
+          cur.type === 'turnLeft'
+            ? delta >= this.cfg.turnYawDeltaDeg
+            : delta <= -this.cfg.turnYawDeltaDeg;
+        if (!cur.turned && reached) {
+          cur.turned = true;
+        } else if (cur.turned && Math.abs(obs.yawDeg) < this.cfg.turnReturnAbsYawBelowDeg) {
+          completedNow = true;
+        }
+        break;
+      }
+      case 'smile': {
+        if (obs.smile >= this.cfg.smileAbove) {
+          if (cur.smileSince === null) cur.smileSince = t;
+          if (t - cur.smileSince >= this.cfg.smileHoldMs) completedNow = true;
+        } else {
+          cur.smileSince = null;
+        }
+        break;
+      }
+    }
+
+    if (completedNow) {
+      this.completed.push({
+        type: cur.type,
+        issuedAt: cur.issuedAt,
+        completedAt: t,
+        passed: true,
+      });
+      this.index += 1;
+      if (this.index < this.challenges.length) {
+        this.issueChallenge(obs);
+      } else {
+        this.phase = 'recenter';
+        this.holdFrames = 0;
+        this.current = null;
+      }
+    }
+  }
+
+  private fail(reason: FailReason): void {
+    if (this.phase === 'done' || this.phase === 'failed') return;
+    this.phase = 'failed';
+    this.failReason = reason;
+  }
+}

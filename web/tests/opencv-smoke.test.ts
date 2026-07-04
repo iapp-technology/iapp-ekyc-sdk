@@ -1,0 +1,133 @@
+/**
+ * OpenCV.js smoke test in Node: load @techstark/opencv-js through the
+ * shared loader and run the full quad-detection pipeline (ALGORITHM.md
+ * steps 1-8) on a synthetic frame — a white ID-1-ish rectangle on a dark
+ * background, built from raw RGBA arrays (no node-canvas).
+ */
+import { beforeAll, describe, expect, it } from 'vitest';
+import { loadOpenCv, type CV, type ImageDataLike } from '../src/core/opencv-loader';
+import { laplacianVariance } from '../src/vision/blur-score';
+import { ASPECT_ID1 } from '../src/vision/geometry';
+import { detectQuad } from '../src/vision/quad-detector';
+
+const WIDTH = 480;
+const HEIGHT = 360;
+// White rectangle: x in [80, 400), y in [70, 290) => 320x220, aspect 1.4545
+// (within ID-1 tolerance 1.586 +/- 0.25), 40.7% of frame area, centered on
+// the guide, 75.8% of the guide area.
+const RECT = { x0: 80, y0: 70, x1: 400, y1: 290 };
+
+function syntheticFrame(): ImageDataLike {
+  const data = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const inside = x >= RECT.x0 && x < RECT.x1 && y >= RECT.y0 && y < RECT.y1;
+      const v = inside ? 230 : 30;
+      const i = (y * WIDTH + x) * 4;
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
+      data[i + 3] = 255;
+    }
+  }
+  return { data, width: WIDTH, height: HEIGHT };
+}
+
+function uniformFrame(value: number): ImageDataLike {
+  const data = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = value;
+    data[i + 1] = value;
+    data[i + 2] = value;
+    data[i + 3] = 255;
+  }
+  return { data, width: WIDTH, height: HEIGHT };
+}
+
+describe('OpenCV.js smoke (Node)', () => {
+  let cv: CV;
+
+  beforeAll(async () => {
+    cv = await loadOpenCv();
+  }, 120_000);
+
+  it('loads the runtime with the shared promise', async () => {
+    expect(cv.Mat).toBeTypeOf('function');
+    // Second call must reuse the same shared promise/instance.
+    const again = await loadOpenCv();
+    expect(again).toBe(cv);
+  });
+
+  it('detects the synthetic rectangle with ~correct corners', () => {
+    const result = detectQuad(cv, syntheticFrame(), ASPECT_ID1);
+    try {
+      expect(result.processedWidth).toBe(WIDTH); // already at processing size
+      expect(result.scaleBack).toBe(1);
+      expect(result.reason).toBeNull();
+      expect(result.quad).not.toBeNull();
+      const quad = result.quad!;
+      // Corner tolerance: Canny/dilate localization shifts edges ~1-2 px.
+      const expected = [
+        [RECT.x0, RECT.y0],
+        [RECT.x1, RECT.y0],
+        [RECT.x1, RECT.y1],
+        [RECT.x0, RECT.y1],
+      ];
+      for (let i = 0; i < 4; i++) {
+        expect(Math.abs(quad[i].x - expected[i][0])).toBeLessThanOrEqual(5);
+        expect(Math.abs(quad[i].y - expected[i][1])).toBeLessThanOrEqual(5);
+      }
+    } finally {
+      result.gray.delete();
+    }
+  });
+
+  it('finds no quad in a uniform frame', () => {
+    const result = detectQuad(cv, uniformFrame(120), ASPECT_ID1);
+    try {
+      expect(result.quad).toBeNull();
+      expect(result.reason).toBe('noQuad');
+    } finally {
+      result.gray.delete();
+    }
+  });
+
+  it('laplacianVariance: hard edges score far above a flat image', () => {
+    const sharp = detectQuad(cv, syntheticFrame(), ASPECT_ID1);
+    const flat = detectQuad(cv, uniformFrame(120), ASPECT_ID1);
+    try {
+      const sharpScore = laplacianVariance(cv, sharp.gray, {
+        x: RECT.x0 - 10,
+        y: RECT.y0 - 10,
+        width: RECT.x1 - RECT.x0 + 20,
+        height: RECT.y1 - RECT.y0 + 20,
+      });
+      const flatScore = laplacianVariance(cv, flat.gray);
+      expect(flatScore).toBeCloseTo(0, 6);
+      expect(sharpScore).toBeGreaterThan(120); // above minSharpness
+    } finally {
+      sharp.gray.delete();
+      flat.gray.delete();
+    }
+  });
+
+  it('warpQuad maps the detected quad onto the full 1011x637 canvas', async () => {
+    const { warpQuad } = await import('../src/vision/perspective');
+    const frame = syntheticFrame();
+    const detection = detectQuad(cv, frame, ASPECT_ID1);
+    expect(detection.quad).not.toBeNull();
+    const rgba = cv.matFromImageData(frame);
+    const warped = warpQuad(cv, rgba, detection.quad!, 1011, 637);
+    try {
+      expect(warped.cols).toBe(1011);
+      expect(warped.rows).toBe(637);
+      // Center of the warped document must be the white card interior.
+      const centerIdx = (Math.floor(637 / 2) * 1011 + Math.floor(1011 / 2)) * 4;
+      expect(warped.data[centerIdx]).toBeGreaterThan(200);
+    } finally {
+      warped.delete();
+      rgba.delete();
+      detection.gray.delete();
+    }
+  });
+});

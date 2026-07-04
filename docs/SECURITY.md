@@ -42,6 +42,11 @@ Node.js example:
 
 ```js
 const crypto = require('crypto');
+const sortKeysDeep = (v) =>
+  Array.isArray(v) ? v.map(sortKeysDeep)
+  : v && typeof v === 'object'
+    ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeysDeep(v[k])]))
+    : v;
 const canonical = (o) => JSON.stringify(sortKeysDeep(o));
 const expected = crypto.createHmac('sha256', SECRET).update(canonical(verdict)).digest('hex');
 const ok = crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'));
