@@ -1,0 +1,30 @@
+iApp eKYC SDK
+Copyright 2026 iApp Technology Co., Ltd.
+https://iapp.co.th
+
+This product includes software developed at iApp Technology Co., Ltd.
+
+--------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------
+
+This SDK depends on the following third-party libraries, which are
+downloaded from their respective package registries at build time and are
+NOT redistributed in this repository:
+
+* OpenCV (https://opencv.org) — Apache License 2.0
+  Used via the `opencv_dart` Dart bindings (Flutter) and
+  `@techstark/opencv-js` WebAssembly build (Web) for document boundary
+  detection, sharpness scoring, and perspective correction.
+
+* Google ML Kit Face Detection (https://developers.google.com/ml-kit)
+  Used via the `google_mlkit_face_detection` Flutter plugin for on-device
+  face observation. Subject to the Google ML Kit Terms of Service.
+
+* MediaPipe Tasks Vision (https://ai.google.dev/edge/mediapipe) —
+  Apache License 2.0. Used on the Web platform for face landmark and
+  blendshape estimation.
+
+The iApp name, the iApp logo, and "iApp eKYC" are trademarks of
+iApp Technology Co., Ltd. Use of this SDK does not grant any rights to
+use these trademarks.

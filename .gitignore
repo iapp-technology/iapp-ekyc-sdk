@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Flutter / Dart
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+flutter/pubspec.lock
+flutter/example/.dart_tool/
+flutter/example/build/
+flutter/example/ios/Pods/
+flutter/example/ios/.symlinks/
+flutter/example/ios/Flutter/Flutter.framework
+flutter/example/ios/Flutter/Flutter.podspec
+flutter/example/android/.gradle/
+flutter/example/android/local.properties
+flutter/example/android/key.properties
+
+# Node / Web
+node_modules/
+web/dist/
+web/coverage/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*

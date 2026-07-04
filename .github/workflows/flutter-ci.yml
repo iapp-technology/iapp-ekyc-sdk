@@ -1,0 +1,26 @@
+name: Flutter CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['flutter/**', '.github/workflows/flutter-ci.yml']
+  pull_request:
+    paths: ['flutter/**', '.github/workflows/flutter-ci.yml']
+
+jobs:
+  analyze-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flutter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.x'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: flutter analyze
+      - run: flutter test
