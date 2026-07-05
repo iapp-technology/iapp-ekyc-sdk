@@ -134,6 +134,8 @@ class CaptureSession {
   private captureStartMs = 0;
   private assistedRun = 0;
   private prevGuideCrop: CvMat | null = null;
+  private baselineGuideCrop: CvMat | null = null;
+  private processedFrameCount = 0;
 
   constructor(
     api: EkycApiClient,
@@ -238,6 +240,17 @@ class CaptureSession {
       );
       const detection = detectQuad(cv, imageData, spec.aspect, guide, this.params);
       try {
+        // Presence baseline for assisted mode: the empty scene, sampled
+        // after ~5 frames so camera auto-exposure has settled, and only
+        // from a frame with no document detected.
+        this.processedFrameCount += 1;
+        if (
+          this.baselineGuideCrop === null &&
+          this.processedFrameCount >= 5 &&
+          !detection.quad
+        ) {
+          this.baselineGuideCrop = this.cloneGuideCrop(cv, detection.gray, guide);
+        }
         tracker.push(detection.quad);
         if (detection.quad) {
           this.resetAssisted();
@@ -301,7 +314,20 @@ class CaptureSession {
    * Returns 'captured' when capture fired, 'active' when accumulating
    * (state chip already set), 'inactive' never (kept for call-site shape).
    */
-  private assistedTick(cv: CV, gray: CvMat, guide: GuideRect): 'captured' | 'active' | 'inactive' {
+  private guideMeanDiff(cv: CV, a: CvMat, b: CvMat): number {
+    const diff = new cv.Mat();
+    cv.absdiff(a, b, diff);
+    const mean = new cv.Mat();
+    const stddev = new cv.Mat();
+    cv.meanStdDev(diff, mean, stddev);
+    const value = mean.data64F[0];
+    diff.delete();
+    mean.delete();
+    stddev.delete();
+    return value;
+  }
+
+  private cloneGuideCrop(cv: CV, gray: CvMat, guide: GuideRect): CvMat {
     const rect = new cv.Rect(
       Math.max(0, Math.round(guide.x)),
       Math.max(0, Math.round(guide.y)),
@@ -311,28 +337,35 @@ class CaptureSession {
     const view = gray.roi(rect);
     const crop = view.clone();
     view.delete();
+    return crop;
+  }
+
+  private assistedTick(cv: CV, gray: CvMat, guide: GuideRect): 'captured' | 'active' | 'inactive' {
+    const crop = this.cloneGuideCrop(cv, gray, guide);
+
+    // Presence gate: an empty desk is sharp and stable too. Only frames
+    // whose guide content moved away from the start-of-session baseline
+    // may count. No baseline yet (camera still settling) -> not present.
+    const present =
+      this.baselineGuideCrop !== null &&
+      this.guideMeanDiff(cv, this.baselineGuideCrop, crop) >= this.params.assistedPresenceMinDiff;
 
     let stable = false;
     if (this.prevGuideCrop) {
-      const diff = new cv.Mat();
-      cv.absdiff(this.prevGuideCrop, crop, diff);
-      const mean = new cv.Mat();
-      const stddev = new cv.Mat();
-      cv.meanStdDev(diff, mean, stddev);
-      stable = mean.data64F[0] <= this.params.assistedMaxMeanDiff;
-      diff.delete();
-      mean.delete();
-      stddev.delete();
+      stable = this.guideMeanDiff(cv, this.prevGuideCrop, crop) <= this.params.assistedMaxMeanDiff;
       this.prevGuideCrop.delete();
     }
     this.prevGuideCrop = crop;
 
-    const sharpness = laplacianVariance(cv, gray, {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
-    });
+    if (!present) {
+      this.assistedRun = 0;
+      this.setState('searching');
+      return 'active';
+    }
+
+    // `prevGuideCrop` now owns the current crop; it IS the guide region,
+    // so sharpness needs no bounds.
+    const sharpness = laplacianVariance(cv, this.prevGuideCrop!);
     const sharp = sharpness >= this.params.minSharpness;
 
     this.assistedRun = stable && sharp ? this.assistedRun + 1 : 0;
@@ -349,6 +382,14 @@ class CaptureSession {
     if (this.prevGuideCrop) {
       this.prevGuideCrop.delete();
       this.prevGuideCrop = null;
+    }
+  }
+
+  /** Baseline lives for the whole session; freed only at teardown. */
+  private freeBaseline(): void {
+    if (this.baselineGuideCrop) {
+      this.baselineGuideCrop.delete();
+      this.baselineGuideCrop = null;
     }
   }
 
@@ -484,6 +525,7 @@ class CaptureSession {
       this.manualTimer = null;
     }
     this.resetAssisted();
+    this.freeBaseline();
   }
 
   /** Clean DOM/camera/timer teardown. Safe to call multiple times. */

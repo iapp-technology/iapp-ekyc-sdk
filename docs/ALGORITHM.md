@@ -100,6 +100,15 @@ guide crop is sharp (Laplacian ≥ `minSharpness`) AND motion-stable
 directly (no perspective warp). This keeps hands-over-edges scenarios
 automatic instead of falling through to the manual button.
 
+**Presence gate** (mandatory for assisted mode): an empty desk is sharp
+and stable too. A baseline guide crop is sampled ≥5 frames after camera
+start (auto-exposure settled) from a frame with no detected document;
+assisted frames count ONLY while the current guide crop differs from that
+baseline by mean abs diff ≥ `assistedPresenceMinDiff = 12`. If the
+document is already in the guide at start, the baseline is never sampled
+and assisted mode stays off — the quad path or the manual button covers
+that session.
+
 A **manual capture button** appears after **10 s** without auto-capture
 (`manualFallbackMs = 10000`).
 

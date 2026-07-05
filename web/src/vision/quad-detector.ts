@@ -73,6 +73,13 @@ export interface DetectionParams {
   assistedStableFrames: number;
   /** Max mean abs pixel diff (0-255) between guide crops to count stable. */
   assistedMaxMeanDiff: number;
+  /**
+   * Presence gate: assisted frames only count when the guide crop differs
+   * from the scene captured at camera start by at least this mean abs
+   * pixel diff — an empty desk is sharp and stable too, and must never
+   * auto-capture.
+   */
+  assistedPresenceMinDiff: number;
 }
 
 export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
@@ -108,6 +115,7 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   assistedFallbackMs: 3_000,
   assistedStableFrames: 4,
   assistedMaxMeanDiff: 10,
+  assistedPresenceMinDiff: 12,
 };
 
 export interface GuideRect {
