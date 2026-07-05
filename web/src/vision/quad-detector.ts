@@ -115,6 +115,10 @@ export interface DetectionParams {
    */
   cardLikeAspectMin: number;
   cardLikeAspectMax: number;
+  /** EMA factor for corner smoothing (0..1; lower = steadier). */
+  cornerSmoothingAlpha: number;
+  /** Corner move beyond this many px snaps to raw (fast reposition). */
+  cornerSmoothingResetPx: number;
 }
 
 export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
@@ -135,15 +139,14 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   guideAreaMinFrac: 0.5,
   // 1.35: users naturally overfill the guide a little.
   guideAreaMaxFrac: 1.35,
-  // Handheld reality: a hand-held card always tremors a few px. Extreme-
-  // corner detection is far steadier frame-to-frame than approxPolyDP, so
-  // the trigger is a quick 3-of-5 frames at 5% drift — ~0.3 s hold.
-  stabilityWindow: 5,
-  minStableFrames: 3,
-  maxCornerDriftFrac: 0.05,
+  // Corners are EMA-smoothed before this check, so hand tremor is damped
+  // and the trigger is easy to reach: 2-of-4 frames at 9% drift (~0.2 s).
+  stabilityWindow: 4,
+  minStableFrames: 2,
+  maxCornerDriftFrac: 0.09,
   // Webcams are soft; the ring buffer still submits the SHARPEST frame.
-  minSharpness: 45,
-  ringBufferSize: 5,
+  minSharpness: 30,
+  ringBufferSize: 6,
   // Auto-capture only fires on an aligned document quad; surface the manual
   // button quickly so a user is never stuck if the quad won't lock.
   manualFallbackMs: 4_000,
@@ -151,6 +154,10 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   guideWidthFrac: 0.8,
   cardLikeAspectMin: 1.25,
   cardLikeAspectMax: 2.4,
+  // EMA smoothing: 0.45 damps jitter while still tracking real movement;
+  // a >60px jump snaps to raw so fast repositions aren't laggy.
+  cornerSmoothingAlpha: 0.45,
+  cornerSmoothingResetPx: 60,
 };
 
 export interface GuideRect {

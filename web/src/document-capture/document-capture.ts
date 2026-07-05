@@ -132,6 +132,7 @@ class CaptureSession {
   private processedWidth = 0;
   private processedHeight = 0;
   private freezeUrl: string | null = null;
+  private smoothedQuad: Quad | null = null;
 
   constructor(
     api: EkycApiClient,
@@ -237,26 +238,29 @@ class CaptureSession {
       );
       const detection = detectQuad(cv, imageData, spec.aspect, guide, this.params);
       try {
-        tracker.push(detection.quad);
-        if (detection.quad) {
+        // Smooth the raw corners (EMA) so per-frame detection jitter does
+        // not spike the stability drift — this is what makes "hold still"
+        // actually reachable by hand — and steadies the drawn quad. On a
+        // rejected frame the smoother resets so re-acquisition is fresh.
+        const smoothed = detection.quad ? this.smoothQuad(detection.quad) : null;
+        if (!detection.quad) this.smoothedQuad = null;
+
+        tracker.push(smoothed);
+        if (smoothed) {
           // Auto-capture fires ONLY on a properly accepted document quad —
           // right shape, size, centered, stable and sharp. No heuristic
           // "guide looks busy" fallback: a real room is full of
           // rectangular furniture that would trip it. The manual button
           // (shown early) is the fallback when the quad never locks.
-          this.lastQuadProcessed = detection.quad;
-          const bbox = quadBoundingBox(
-            detection.quad,
-            detection.processedWidth,
-            detection.processedHeight,
-          );
+          this.lastQuadProcessed = smoothed;
+          const bbox = quadBoundingBox(smoothed, detection.processedWidth, detection.processedHeight);
           const sharpness = laplacianVariance(cv, detection.gray, bbox);
-          this.ring.push({ quad: detection.quad, sharpness });
+          this.ring.push({ quad: smoothed, sharpness });
           if (this.ring.length > this.params.ringBufferSize) this.ring.shift();
 
           const bestSharpness = Math.max(...this.ring.map((r) => r.sharpness));
           if (tracker.triggered && bestSharpness >= this.params.minSharpness) {
-            void this.capture(detection.quad); // auto-capture (step 11)
+            void this.capture(smoothed); // auto-capture (step 11)
             return;
           }
           this.setState(
@@ -276,7 +280,7 @@ class CaptureSession {
               this.setState('searching');
           }
         }
-        this.draw(guide, detection.quad);
+        this.draw(guide, smoothed);
       } finally {
         detection.gray.delete();
       }
@@ -403,6 +407,29 @@ class CaptureSession {
     }
   }
 
+  /**
+   * Exponential moving average of the corner positions. Snaps to the raw
+   * quad if the jump is large (fast reposition) so the guide tracks quick
+   * moves, but damps small frame-to-frame jitter otherwise.
+   */
+  private smoothQuad(raw: Quad): Quad {
+    const prev = this.smoothedQuad;
+    if (!prev) {
+      this.smoothedQuad = raw;
+      return raw;
+    }
+    const a = this.params.cornerSmoothingAlpha;
+    const jumpPx = this.params.cornerSmoothingResetPx;
+    const next = raw.map((p, i) => {
+      const dx = p.x - prev[i].x;
+      const dy = p.y - prev[i].y;
+      if (Math.hypot(dx, dy) > jumpPx) return p; // big move → snap
+      return { x: prev[i].x + dx * a, y: prev[i].y + dy * a };
+    }) as Quad;
+    this.smoothedQuad = next;
+    return next;
+  }
+
   /** Camera-shutter flash: snap to opaque white, then fade out. */
   private playShutter(): void {
     const flash = this.overlay?.flash;
@@ -466,6 +493,7 @@ class CaptureSession {
     this.ring = [];
     this.procCanvas = null;
     this.cv = null;
+    this.smoothedQuad = null;
     if (this.freezeUrl) {
       URL.revokeObjectURL(this.freezeUrl);
       this.freezeUrl = null;

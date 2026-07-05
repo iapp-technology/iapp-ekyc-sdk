@@ -52,13 +52,15 @@ is dropped (never queued) while a previous frame is still being processed.
      `guideCornerMarginFrac = 0.12` AND inside the frame border
      (`borderMarginPx = 6`); quad area between **50%–135%** of guide area
      (`guideAreaMinFrac`/`guideAreaMaxFrac` — users naturally overfill).
-9. **Stability tracking** (pure code, no OpenCV — unit tested):
-   sliding window of the last **5** processed frames (`stabilityWindow`).
-   A frame is *stable* if it was accepted AND its maximum corner
-   displacement vs. the previous accepted frame is < **5%** of the frame
-   diagonal (`maxCornerDriftFrac` — handheld cards always tremor, and
-   extreme-corner detection is steady enough to allow it). Trigger:
-   ≥ **3 of 5** frames stable (`minStableFrames`), ~0.3 s of a normal hold.
+9. **Corner smoothing + stability tracking.** Accepted corners are first
+   **EMA-smoothed** (`cornerSmoothingAlpha = 0.45`; a jump > 60 px snaps to
+   raw for fast repositions) so per-frame detection jitter is damped — this
+   is what makes "hold still" reachable by hand and steadies the drawn
+   quad. The tracker (pure code, unit-tested) then keeps a sliding window
+   of the last **4** processed frames; a frame is *stable* if accepted AND
+   its max corner displacement vs. the previous accepted frame is < **9%**
+   of the frame diagonal (`maxCornerDriftFrac`). Trigger: ≥ **2 of 4**
+   frames stable (`minStableFrames`), ~0.2 s of a normal hold.
 10. **Sharpness**: `Laplacian(CV_64F)` on the quad's bounding-box crop of
     the 480-px grayscale; score = variance. Sharp iff score ≥ **45**
     (`minSharpness` — consumer cameras are soft, and the ring buffer
