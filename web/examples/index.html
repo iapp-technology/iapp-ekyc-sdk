@@ -71,6 +71,7 @@
     <legend>Face — active liveness (camera)</legend>
     <button id="btnActiveLiveness">Start active liveness</button>
     <label><input type="checkbox" id="returnImage" /> return_image</label>
+    <code id="livenessDebug" style="display:block;margin-top:6px;color:#0c4a6e;font-size:12px"></code>
   </fieldset>
 
   <fieldset>
@@ -145,6 +146,18 @@
           mount: mountEl,
           returnImage: document.getElementById('returnImage').checked,
           onState: (info) => console.log('[liveness state]', info),
+          // Live metrics readout (debug aid): eye/smile/yaw values per frame.
+          onObservation: (o) => {
+            const dbg = document.getElementById('livenessDebug');
+            if (o.count === 1) {
+              dbg.textContent =
+                `eyeL ${o.leftEyeOpen.toFixed(2)}  eyeR ${o.rightEyeOpen.toFixed(2)}  ` +
+                `smile ${o.smile.toFixed(2)}  yaw ${o.yawDeg.toFixed(0)}°  ` +
+                `width ${o.faceWidthFrac.toFixed(2)}`;
+            } else {
+              dbg.textContent = `faces: ${o.count}`;
+            }
+          },
         });
         show(result.raw);
       } catch (err) {

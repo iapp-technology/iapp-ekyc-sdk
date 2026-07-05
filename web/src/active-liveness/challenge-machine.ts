@@ -90,12 +90,24 @@ export interface ChallengeMachineConfig {
   findFaceMaxAbsPitchDeg: number;
   /** findFace: centerOffsetFrac < 0.12. */
   maxCenterOffsetFrac: number;
-  /** blink: both eyes < 0.2 ... */
+  /** blink fallback (no baseline yet): both eyes < 0.2 ... */
   blinkClosedBelow: number;
   /** ... THEN both > 0.7 ... */
   blinkOpenAbove: number;
   /** ... within 1.5 s of the closed sample. */
   blinkReopenWindowMs: number;
+  /**
+   * Adaptive blink: the machine tracks the user's own open-eye baseline
+   * (EMA of min(left,right) over frontal frames). Glasses/small-eyes users
+   * often never dip below the absolute threshold, so the effective closed
+   * threshold becomes clamp(baseline * blinkRelClosedFrac,
+   * blinkClosedFloor, blinkClosedCeil) and the reopen threshold
+   * min(blinkOpenAbove, baseline * blinkRelOpenFrac).
+   */
+  blinkRelClosedFrac: number;
+  blinkRelOpenFrac: number;
+  blinkClosedFloor: number;
+  blinkClosedCeil: number;
   /** turn: yaw delta from baseline >= 18 deg in the required direction. */
   turnYawDeltaDeg: number;
   /** turn: then return to |yaw| < 12 deg to complete. */
@@ -129,6 +141,10 @@ export const DEFAULT_CHALLENGE_MACHINE_CONFIG: Omit<ChallengeMachineConfig, 'rng
   blinkClosedBelow: 0.2,
   blinkOpenAbove: 0.7,
   blinkReopenWindowMs: 1500,
+  blinkRelClosedFrac: 0.55,
+  blinkRelOpenFrac: 0.85,
+  blinkClosedFloor: 0.15,
+  blinkClosedCeil: 0.5,
   turnYawDeltaDeg: 18,
   turnReturnAbsYawBelowDeg: 12,
   smileAbove: 0.8,
@@ -185,6 +201,7 @@ export class ChallengeMachine {
   private index = -1;
   private current: ChallengeRuntime | null = null;
   private lastFaceSeenAt: number | null = null;
+  private eyeBaseline: number | null = null;
   private completed: CompletedChallenge[] = [];
   private startedAtMs = 0;
   private finishedAtMs = 0;
@@ -303,9 +320,27 @@ export class ChallengeMachine {
     );
   }
 
+  /**
+   * EMA of the user's own open-eye level, sampled on frames where the eyes
+   * are at (or near) their typical openness. Never pulled down by blinks:
+   * samples below 80% of the current baseline are ignored.
+   */
+  private updateEyeBaseline(obs: FaceObservation): void {
+    const minEye = Math.min(obs.leftEyeOpen, obs.rightEyeOpen);
+    if (this.eyeBaseline === null) {
+      if (minEye > 0.3) this.eyeBaseline = minEye;
+      return;
+    }
+    if (minEye >= this.eyeBaseline * 0.8) {
+      this.eyeBaseline = this.eyeBaseline * 0.8 + minEye * 0.2;
+    }
+  }
+
   private processHold(obs: FaceObservation): void {
-    if (this.meetsFrontalHold(obs)) this.holdFrames += 1;
-    else this.holdFrames = 0;
+    if (this.meetsFrontalHold(obs)) {
+      this.holdFrames += 1;
+      this.updateEyeBaseline(obs);
+    } else this.holdFrames = 0;
 
     if (this.holdFrames >= this.cfg.findFaceHoldFrames) {
       if (this.phase === 'findFace') {
@@ -393,17 +428,31 @@ export class ChallengeMachine {
     }
 
     this.lastFaceSeenAt = t;
+    this.updateEyeBaseline(obs);
     if (cur.baselineYaw === null) cur.baselineYaw = obs.yawDeg;
 
     let completedNow = false;
     switch (cur.type) {
       case 'blink': {
-        const closed =
-          obs.leftEyeOpen < this.cfg.blinkClosedBelow &&
-          obs.rightEyeOpen < this.cfg.blinkClosedBelow;
-        const open =
-          obs.leftEyeOpen > this.cfg.blinkOpenAbove &&
-          obs.rightEyeOpen > this.cfg.blinkOpenAbove;
+        // Adaptive thresholds calibrated to this user's open-eye baseline —
+        // glasses/small-eyes users rarely reach the absolute floor.
+        const base = this.eyeBaseline;
+        const closedThr =
+          base === null
+            ? this.cfg.blinkClosedBelow
+            : Math.min(
+                this.cfg.blinkClosedCeil,
+                Math.max(this.cfg.blinkClosedFloor, base * this.cfg.blinkRelClosedFrac),
+              );
+        const openThr =
+          base === null
+            ? this.cfg.blinkOpenAbove
+            : Math.max(
+                closedThr + 0.05,
+                Math.min(this.cfg.blinkOpenAbove, base * this.cfg.blinkRelOpenFrac),
+              );
+        const closed = obs.leftEyeOpen < closedThr && obs.rightEyeOpen < closedThr;
+        const open = obs.leftEyeOpen > openThr && obs.rightEyeOpen > openThr;
         if (closed) {
           // Track the most recent closed sample; the reopen window runs
           // from here. A static closed-eyes photo never satisfies `open`,

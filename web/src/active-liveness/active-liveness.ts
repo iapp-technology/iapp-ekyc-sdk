@@ -68,6 +68,8 @@ export interface ActiveLivenessStartOptions {
   modelUrl?: string;
   /** Override challenge-machine constants (tests/tuning). */
   machineConfig?: Partial<ChallengeMachineConfig>;
+  /** Debug hook: fires for every processed frame with the raw observation. */
+  onObservation?: (obs: FaceObservation) => void;
 }
 
 export class ActiveLivenessFlow {
@@ -172,6 +174,7 @@ class LivenessSession {
       ovalCenterY: oval.cy / video.videoHeight,
     });
 
+    this.options.onObservation?.(obs);
     const snapshot = this.machine.process(obs);
     this.considerBestFrame(result, obs, video);
     this.render(snapshot, obs, oval);

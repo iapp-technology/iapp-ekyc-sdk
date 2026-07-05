@@ -220,6 +220,55 @@ void main() {
     expect(h.machine.failureReason, LivenessFailureReason.challengeTimeout);
   });
 
+  test('GLASSES: shallow blink is detected via the adaptive baseline', () {
+    // A glasses user whose eye-open blendshape idles at ~0.55 and only
+    // dips to ~0.28 when blinking — invisible to the absolute 0.2/0.7
+    // thresholds.
+    final h = Harness(config: _blinkOnly);
+    const glasses = FaceObservation(
+      count: 1,
+      yawDeg: 0,
+      pitchDeg: 0,
+      leftEyeOpen: 0.55,
+      rightEyeOpen: 0.55,
+      smile: 0,
+      faceWidthFrac: 0.4,
+      centerOffsetFrac: 0.05,
+      trackingId: 7,
+    );
+    for (var i = 0; i < 25; i++) {
+      h.tick(glasses);
+    }
+    expect(h.machine.currentChallenge, LivenessChallenge.blink);
+
+    // baseline ≈ 0.55 → closed < ~0.30, reopen > ~0.47.
+    const shallowDip = FaceObservation(
+      count: 1,
+      yawDeg: 0,
+      pitchDeg: 0,
+      leftEyeOpen: 0.28,
+      rightEyeOpen: 0.28,
+      smile: 0,
+      faceWidthFrac: 0.4,
+      centerOffsetFrac: 0.05,
+      trackingId: 7,
+    );
+    const shallowReopen = FaceObservation(
+      count: 1,
+      yawDeg: 0,
+      pitchDeg: 0,
+      leftEyeOpen: 0.5,
+      rightEyeOpen: 0.5,
+      smile: 0,
+      faceWidthFrac: 0.4,
+      centerOffsetFrac: 0.05,
+      trackingId: 7,
+    );
+    h.tick(shallowDip);
+    h.tick(shallowReopen);
+    expect(h.machine.log.map((e) => e.type), [LivenessChallenge.blink]);
+  });
+
   test('blink reopening after the 1.5 s window does not complete', () {
     final h = Harness(config: _blinkOnly);
     h.passFindFace();

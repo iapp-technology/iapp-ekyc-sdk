@@ -256,6 +256,20 @@ describe('ChallengeMachine — blink specifics', () => {
     rig.frame(face());
     expect(rig.machine.completedChallenges.length).toBe(0);
   });
+
+  it('GLASSES: shallow blink is detected via the adaptive baseline', () => {
+    // A glasses user whose eye-open blendshape idles at ~0.55 and only dips
+    // to ~0.28 when blinking — invisible to the absolute 0.2/0.7 thresholds.
+    const rig = makeRig();
+    rig.machine.start();
+    const glassesFace = { leftEyeOpen: 0.55, rightEyeOpen: 0.55 };
+    for (let i = 0; i < 25; i++) rig.frame(face(glassesFace));
+    expect(rig.machine.state.currentChallenge).toBe('blink');
+    // baseline ≈ 0.55 → closed < ~0.30, reopen > ~0.47.
+    rig.frame(face({ leftEyeOpen: 0.28, rightEyeOpen: 0.28 }));
+    rig.frame(face({ leftEyeOpen: 0.5, rightEyeOpen: 0.5 }));
+    expect(rig.machine.completedChallenges.map((c) => c.type)).toEqual(['blink']);
+  });
 });
 
 describe('ChallengeMachine — turn specifics', () => {

@@ -49,9 +49,17 @@ Pure code (no camera/ML imports), RNG injectable for tests:
 - **Challenges**: draw **N = 3** distinct challenges uniformly at random
   from `{blink, turnLeft, turnRight, smile}` (`challengeCount`,
   `challengePool` configurable). Completion predicates:
-  - **blink** — both eyes < **0.2**, THEN both > **0.7** within **1.5 s**
-    of the closed sample. The closed→open transition is mandatory
-    (a printed photo of closed eyes must NOT pass).
+  - **blink** — both eyes below the closed threshold, THEN both above the
+    reopen threshold within **1.5 s** of the closed sample. The
+    closed→open transition is mandatory (a printed photo of closed eyes
+    must NOT pass). Thresholds are **adaptive**: the machine tracks the
+    user's own open-eye baseline (EMA of min(left,right) over frontal
+    frames, samples below 80% of baseline ignored); closed =
+    `clamp(baseline × 0.55, 0.15, 0.5)`, reopen =
+    `min(0.7, baseline × 0.85)` (≥ closed + 0.05). With no baseline yet,
+    absolute fallbacks **0.2 / 0.7** apply. Glasses and small-eyes users
+    rarely reach the absolute floor — the relative rule is what makes
+    blink detection reliable for them.
   - **turnLeft / turnRight** — yaw delta from the baseline captured at
     challenge issue ≥ **18°** in the required direction, then return to
     `|yaw| < 12°` to complete.

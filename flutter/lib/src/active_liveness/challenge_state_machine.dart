@@ -31,12 +31,24 @@ class ChallengeConfig {
   final double maxAbsPitchDeg;
   final double maxCenterOffsetFrac;
 
-  /// Blink: both eyes < [eyeClosedMax], THEN both > [eyeOpenMin] within
-  /// [blinkWindowMs] of the closed sample. The closed→open transition is
-  /// mandatory — a printed photo of closed eyes must NOT pass.
+  /// Blink fallback (no baseline yet): both eyes < [eyeClosedMax], THEN
+  /// both > [eyeOpenMin] within [blinkWindowMs] of the closed sample. The
+  /// closed→open transition is mandatory — a printed photo of closed eyes
+  /// must NOT pass.
   final double eyeClosedMax;
   final double eyeOpenMin;
   final int blinkWindowMs;
+
+  /// Adaptive blink: the machine tracks the user's own open-eye baseline
+  /// (EMA of min(left, right) over frontal frames). Glasses/small-eyes
+  /// users often never dip below the absolute threshold, so the effective
+  /// closed threshold becomes clamp(baseline × [blinkRelClosedFrac],
+  /// [blinkClosedFloor], [blinkClosedCeil]) and the reopen threshold
+  /// min([eyeOpenMin], baseline × [blinkRelOpenFrac]).
+  final double blinkRelClosedFrac;
+  final double blinkRelOpenFrac;
+  final double blinkClosedFloor;
+  final double blinkClosedCeil;
 
   /// Turn: yaw delta from the baseline captured at challenge issue must
   /// reach [turnDeltaDeg] in the required direction, then return to
@@ -70,6 +82,10 @@ class ChallengeConfig {
     this.eyeClosedMax = 0.2,
     this.eyeOpenMin = 0.7,
     this.blinkWindowMs = 1500,
+    this.blinkRelClosedFrac = 0.55,
+    this.blinkRelOpenFrac = 0.85,
+    this.blinkClosedFloor = 0.15,
+    this.blinkClosedCeil = 0.5,
     this.turnDeltaDeg = 18,
     this.turnReturnAbsYawDeg = 12,
     this.smileMin = 0.8,
@@ -202,6 +218,10 @@ class ChallengeStateMachine {
   // findFace / recenter progress.
   int _goodFrameStreak = 0;
 
+  // Adaptive blink: EMA of the user's own open-eye level (null until
+  // seeded by the first frontal frame with min(left, right) > 0.3).
+  double? _eyeBaseline;
+
   // Per-challenge state.
   int _issuedAtMs = 0;
   int _restarts = 0;
@@ -226,6 +246,7 @@ class ChallengeStateMachine {
     _failureReason = null;
     _challengeIndex = -1;
     _goodFrameStreak = 0;
+    _eyeBaseline = null;
     _startedAtMs = _nowMs();
     _finishedAtMs = null;
     _phase = LivenessPhase.findFace;
@@ -280,6 +301,21 @@ class ChallengeStateMachine {
       obs.pitchDeg.abs() < config.maxAbsPitchDeg &&
       obs.centerOffsetFrac < config.maxCenterOffsetFrac;
 
+  /// EMA of the user's own open-eye level, sampled on frames where the
+  /// eyes are at (or near) their typical openness. Never pulled down by
+  /// blinks: samples below 80% of the current baseline are ignored.
+  void _updateEyeBaseline(FaceObservation obs) {
+    final minEye = min(obs.leftEyeOpen, obs.rightEyeOpen);
+    final baseline = _eyeBaseline;
+    if (baseline == null) {
+      if (minEye > 0.3) _eyeBaseline = minEye;
+      return;
+    }
+    if (minEye >= baseline * 0.8) {
+      _eyeBaseline = baseline * 0.8 + minEye * 0.2;
+    }
+  }
+
   String _frontalHintKey(FaceObservation obs) {
     if (obs.count == 0) return 'position_face';
     if (obs.count > 1) return 'multiple_faces';
@@ -297,6 +333,7 @@ class ChallengeStateMachine {
   LivenessUpdate _processFindFace(FaceObservation obs) {
     if (_meetsFrontalConditions(obs)) {
       _goodFrameStreak++;
+      _updateEyeBaseline(obs);
       if (_goodFrameStreak >= config.findFaceFrames) {
         _issueChallenge(0, obs);
         return _update(
@@ -313,6 +350,7 @@ class ChallengeStateMachine {
   LivenessUpdate _processRecenter(FaceObservation obs) {
     if (_meetsFrontalConditions(obs)) {
       _goodFrameStreak++;
+      _updateEyeBaseline(obs);
       if (_goodFrameStreak >= config.recenterFrames) {
         _phase = LivenessPhase.capture;
         _finishedAtMs = _nowMs();
@@ -379,6 +417,7 @@ class ChallengeStateMachine {
       return _restartChallenge('face_lost');
     }
     _lastTrackingId ??= obs.trackingId;
+    _updateEyeBaseline(obs);
     _turnBaselineYaw ??= obs.yawDeg;
 
     final completed = switch (challenge) {
@@ -413,16 +452,30 @@ class ChallengeStateMachine {
     return _update(LivenessEvent.none, challenge.instructionKey);
   }
 
-  /// Blink: both eyes < 0.2, THEN both > 0.7 within 1.5 s of the closed
-  /// sample. The closed→open TRANSITION is mandatory — a printed photo of
-  /// closed eyes never opens, so it can never pass.
+  /// Blink: both eyes below the closed threshold, THEN both above the
+  /// reopen threshold within 1.5 s of the closed sample. The closed→open
+  /// TRANSITION is mandatory — a printed photo of closed eyes never
+  /// opens, so it can never pass.
+  ///
+  /// Thresholds are adaptive, calibrated to this user's open-eye baseline
+  /// — glasses/small-eyes users rarely reach the absolute floor. With no
+  /// baseline yet, the absolute fallbacks 0.2 / 0.7 apply.
   bool _checkBlink(FaceObservation obs, int now) {
-    final closed =
-        obs.leftEyeOpen < config.eyeClosedMax &&
-        obs.rightEyeOpen < config.eyeClosedMax;
-    final open =
-        obs.leftEyeOpen > config.eyeOpenMin &&
-        obs.rightEyeOpen > config.eyeOpenMin;
+    final baseline = _eyeBaseline;
+    final closedThr = baseline == null
+        ? config.eyeClosedMax
+        : min(
+            config.blinkClosedCeil,
+            max(config.blinkClosedFloor, baseline * config.blinkRelClosedFrac),
+          );
+    final openThr = baseline == null
+        ? config.eyeOpenMin
+        : max(
+            closedThr + 0.05,
+            min(config.eyeOpenMin, baseline * config.blinkRelOpenFrac),
+          );
+    final closed = obs.leftEyeOpen < closedThr && obs.rightEyeOpen < closedThr;
+    final open = obs.leftEyeOpen > openThr && obs.rightEyeOpen > openThr;
 
     if (closed) {
       _blinkClosedAtMs = now; // Keep the most recent closed sample.
