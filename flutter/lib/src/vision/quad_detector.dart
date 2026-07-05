@@ -53,6 +53,18 @@ class DetectionConfig {
   /// Manual capture button appears after this long without auto-capture.
   final int manualFallbackMs;
 
+  /// Assisted fallback: if no quad has been accepted after this many ms,
+  /// auto-capture switches to guide-region mode — fingers over the card
+  /// edge routinely break contour-based quad detection, and users should
+  /// not need the manual button for that.
+  final int assistedFallbackMs;
+
+  /// Consecutive sharp+stable guide frames required in assisted mode.
+  final int assistedStableFrames;
+
+  /// Max mean abs pixel diff (0–255) between guide crops to count stable.
+  final double assistedMaxMeanDiff;
+
   /// Frame-processing budget (frames per second).
   final int maxProcessingFps;
 
@@ -67,13 +79,17 @@ class DetectionConfig {
     this.borderMarginPx = 8,
     this.aspectTolerance = 0.25,
     this.guideAreaMinFrac = 0.6,
-    this.guideAreaMaxFrac = 1.15,
+    // 1.3: users naturally overfill the guide a little; 1.15 rejected that.
+    this.guideAreaMaxFrac = 1.3,
     this.stabilityWindow = 8,
     this.minStableFrames = 6,
     this.maxCornerDriftFrac = 0.02,
     this.minSharpness = 120,
     this.frameBufferSize = 5,
     this.manualFallbackMs = 10000,
+    this.assistedFallbackMs = 4000,
+    this.assistedStableFrames = 6,
+    this.assistedMaxMeanDiff = 6,
     this.maxProcessingFps = 10,
   });
 }
@@ -300,76 +316,80 @@ class QuadDetector {
         for (var i = 0; i < limit; i++) {
           final contour = ranked[i].$2;
           // Step 7: quadrilateral test.
-          final eps = config.approxEpsilonFrac * cv.arcLength(contour, true);
-          final approx = cv.approxPolyDP(contour, eps, true);
-          try {
-            if (approx.length != 4) continue;
-            if (!cv.isContourConvex(approx)) continue;
-
-            final ordered = geo.orderCorners([
-              for (final p in approx)
-                math.Point<double>(p.x.toDouble(), p.y.toDouble()),
-            ]);
-            if (!geo.anglesOk(ordered)) continue;
-
-            final area = cv.contourArea(approx);
-            if (area < config.minFrameAreaFrac * frameArea) continue;
-            if (area < config.minGuideAreaFrac * guideArea) continue;
-
-            final insideBorder = ordered.every(
-              (p) =>
-                  p.x >= config.borderMarginPx &&
-                  p.y >= config.borderMarginPx &&
-                  p.x <= procW - config.borderMarginPx &&
-                  p.y <= procH - config.borderMarginPx,
-            );
-            if (!insideBorder) continue;
-
-            // Step 8: shape + guide-alignment checks.
-            final aspect = geo.aspectRatio(ordered);
-            if (!geo.aspectAccepted(
-              aspect,
-              targetAspect,
-              tolerance: config.aspectTolerance,
-            )) {
-              rejection = QuadStatus.alignCard;
-              continue;
+          var pts = _fourPointApprox(contour);
+          if (pts == null) {
+            // Fingers holding a card break its outline into >4 vertices;
+            // the convex hull smooths those intrusions back into a
+            // quadrilateral.
+            final hullMat = cv.convexHull(contour);
+            final hull = cv.VecPoint.fromMat(hullMat);
+            try {
+              pts = _fourPointApprox(hull);
+            } finally {
+              hull.dispose();
+              hullMat.dispose();
             }
-
-            final centroid = geo.quadCentroid(ordered);
-            if (!guideProc.containsPoint(
-              math.Point<double>(centroid.x, centroid.y),
-            )) {
-              rejection = QuadStatus.alignCard;
-              continue;
-            }
-
-            if (area < config.guideAreaMinFrac * guideArea) {
-              rejection = QuadStatus.moveCloser;
-              continue;
-            }
-            if (area > config.guideAreaMaxFrac * guideArea) {
-              rejection = QuadStatus.alignCard;
-              continue;
-            }
-
-            // Step 10: sharpness on the quad's bounding-box crop of the
-            // processed grayscale.
-            final sharpness = _quadSharpness(proc, ordered, procW, procH);
-
-            final sourceCorners = [
-              for (final p in ordered)
-                math.Point<double>(p.x / scale, p.y / scale),
-            ];
-            return QuadDetectionResult._(
-              QuadStatus.found,
-              corners: sourceCorners,
-              aspect: aspect,
-              sharpness: sharpness,
-            );
-          } finally {
-            approx.dispose();
           }
+          if (pts == null) continue;
+
+          final ordered = geo.orderCorners(pts);
+          if (!geo.anglesOk(ordered)) continue;
+
+          final area = geo.quadArea(ordered);
+          if (area < config.minFrameAreaFrac * frameArea) continue;
+          if (area < config.minGuideAreaFrac * guideArea) continue;
+
+          final insideBorder = ordered.every(
+            (p) =>
+                p.x >= config.borderMarginPx &&
+                p.y >= config.borderMarginPx &&
+                p.x <= procW - config.borderMarginPx &&
+                p.y <= procH - config.borderMarginPx,
+          );
+          if (!insideBorder) continue;
+
+          // Step 8: shape + guide-alignment checks.
+          final aspect = geo.aspectRatio(ordered);
+          if (!geo.aspectAccepted(
+            aspect,
+            targetAspect,
+            tolerance: config.aspectTolerance,
+          )) {
+            rejection = QuadStatus.alignCard;
+            continue;
+          }
+
+          final centroid = geo.quadCentroid(ordered);
+          if (!guideProc.containsPoint(
+            math.Point<double>(centroid.x, centroid.y),
+          )) {
+            rejection = QuadStatus.alignCard;
+            continue;
+          }
+
+          if (area < config.guideAreaMinFrac * guideArea) {
+            rejection = QuadStatus.moveCloser;
+            continue;
+          }
+          if (area > config.guideAreaMaxFrac * guideArea) {
+            rejection = QuadStatus.alignCard;
+            continue;
+          }
+
+          // Step 10: sharpness on the quad's bounding-box crop of the
+          // processed grayscale.
+          final sharpness = _quadSharpness(proc, ordered, procW, procH);
+
+          final sourceCorners = [
+            for (final p in ordered)
+              math.Point<double>(p.x / scale, p.y / scale),
+          ];
+          return QuadDetectionResult._(
+            QuadStatus.found,
+            corners: sourceCorners,
+            aspect: aspect,
+            sharpness: sharpness,
+          );
         }
         return QuadDetectionResult._(rejection);
       } finally {
@@ -379,6 +399,25 @@ class QuadDetector {
       for (final mat in mats) {
         mat.dispose();
       }
+    }
+  }
+
+  /// Step 7 polygon approximation: `approxPolyDP` with
+  /// ε = [DetectionConfig.approxEpsilonFrac] × arcLength. Returns the four
+  /// corner points iff the approximation has exactly 4 points and is
+  /// convex, else null (mirrors the Web SDK's `fourPointApprox`).
+  List<math.Point<double>>? _fourPointApprox(cv.VecPoint shape) {
+    final eps = config.approxEpsilonFrac * cv.arcLength(shape, true);
+    final approx = cv.approxPolyDP(shape, eps, true);
+    try {
+      if (approx.length != 4) return null;
+      if (!cv.isContourConvex(approx)) return null;
+      return [
+        for (final p in approx)
+          math.Point<double>(p.x.toDouble(), p.y.toDouble()),
+      ];
+    } finally {
+      approx.dispose();
     }
   }
 

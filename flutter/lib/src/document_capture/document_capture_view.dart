@@ -180,8 +180,12 @@ class _DocumentCaptureViewState extends State<DocumentCaptureView> {
       }
       // Detection on the still failed → best buffered stream frame.
       jpeg ??= _controller.captureFromBestBufferedFrame();
-      // Manual capture with no accepted quad ever → guide-region crop.
-      if (jpeg == null && manual && still != null && !still.isEmpty) {
+      // Manual/assisted capture with no accepted quad ever → guide-region
+      // crop (the assisted fallback uses the same path as the button).
+      if (jpeg == null &&
+          (manual || _controller.assistedCaptureTriggered) &&
+          still != null &&
+          !still.isEmpty) {
         jpeg = _controller.captureGuideRegion(still);
       }
     } catch (_) {

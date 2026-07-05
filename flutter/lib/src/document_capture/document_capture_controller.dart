@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
+import '../vision/blur_scorer.dart';
 import '../vision/perspective_cropper.dart';
 import '../vision/quad_detector.dart';
 import '../vision/stability_tracker.dart';
@@ -47,6 +48,20 @@ extension DocumentCaptureStateKey on DocumentCaptureState {
         return 'error_generic';
     }
   }
+}
+
+/// Outcome of one assisted-fallback frame (mirrors the Web SDK's
+/// `assistedTick` statuses `'captured' | 'active' | 'inactive'`).
+enum AssistedStatus {
+  /// Assisted mode not engaged (< `assistedFallbackMs` since search start).
+  inactive,
+
+  /// Accumulating consecutive sharp+stable guide frames; the state chip
+  /// shows holdStill / tooBlurry.
+  active,
+
+  /// The consecutive-frame threshold was reached; capture is latched.
+  captured,
 }
 
 /// One accepted stream frame kept in the ring buffer for the capture
@@ -119,6 +134,9 @@ class DocumentCaptureController extends ChangeNotifier {
   final Queue<BufferedFrame> _buffer = Queue<BufferedFrame>();
   DateTime? _searchStartedAt;
   bool _captureLatched = false;
+  int _assistedRun = 0;
+  cv.Mat? _prevGuideCrop;
+  bool _assistedCapture = false;
 
   /// Corners of the most recent accepted frame (upright source coords).
   List<math.Point<double>>? get lastCorners =>
@@ -144,6 +162,11 @@ class DocumentCaptureController extends ChangeNotifier {
   /// True once auto/manual capture has fired; frame processing stops.
   bool get captureLatched => _captureLatched;
 
+  /// True when the pending capture was triggered by the assisted fallback
+  /// (no quad was ever accepted): the capture path must include the
+  /// guide-region crop fallback, exactly like the manual button.
+  bool get assistedCaptureTriggered => _assistedCapture;
+
   /// (Re)enters the live detection loop.
   void startDetection() {
     _state = DocumentCaptureState.searching;
@@ -151,6 +174,8 @@ class DocumentCaptureController extends ChangeNotifier {
     _buffer.clear();
     _searchStartedAt = _now();
     _captureLatched = false;
+    _assistedCapture = false;
+    _resetAssisted();
     notifyListeners();
   }
 
@@ -197,14 +222,24 @@ class DocumentCaptureController extends ChangeNotifier {
 
     if (!result.isFound) {
       tracker.addFrame(null);
-      setFlowState(switch (result.status) {
-        QuadStatus.moveCloser => DocumentCaptureState.moveCloser,
-        QuadStatus.alignCard => DocumentCaptureState.alignCard,
-        _ => DocumentCaptureState.searching,
-      });
+      var assisted = AssistedStatus.inactive;
+      if (_assistedWindowOpen()) {
+        final (sharp, stable) = _assistedFrameVerdict(uprightGray, guide);
+        assisted = assistedTick(sharp: sharp, stable: stable);
+      }
+      if (assisted == AssistedStatus.captured) return true;
+      if (assisted == AssistedStatus.inactive) {
+        setFlowState(switch (result.status) {
+          QuadStatus.moveCloser => DocumentCaptureState.moveCloser,
+          QuadStatus.alignCard => DocumentCaptureState.alignCard,
+          _ => DocumentCaptureState.searching,
+        });
+      }
+      // active: assistedTick already set the holdStill/tooBlurry chip.
       return false;
     }
 
+    _resetAssisted();
     tracker.addFrame(result.corners);
 
     _buffer.addLast(
@@ -241,7 +276,110 @@ class DocumentCaptureController extends ChangeNotifier {
   void triggerManualCapture() {
     if (_captureLatched) return;
     _captureLatched = true;
+    _resetAssisted();
     setFlowState(DocumentCaptureState.capturing);
+  }
+
+  /// Assisted-fallback bookkeeping (docs/ALGORITHM.md, "Assisted
+  /// fallback"): call once per no-quad frame with the guide crop's
+  /// sharp/stable verdicts. Pure logic — no OpenCV — so it is unit
+  /// testable; the verdicts themselves come from [_assistedFrameVerdict].
+  ///
+  /// Latches capture (guide-crop path, same as the manual button) and
+  /// returns [AssistedStatus.captured] once `assistedStableFrames`
+  /// consecutive sharp+stable frames accumulate. While accumulating, the
+  /// state chip shows holdStill (sharp) or tooBlurry.
+  @visibleForTesting
+  AssistedStatus assistedTick({required bool sharp, required bool stable}) {
+    if (!_assistedWindowOpen()) return AssistedStatus.inactive;
+    _assistedRun = sharp && stable ? _assistedRun + 1 : 0;
+    if (_assistedRun >= config.assistedStableFrames) {
+      _resetAssisted();
+      _assistedCapture = true;
+      _captureLatched = true;
+      setFlowState(DocumentCaptureState.capturing);
+      return AssistedStatus.captured;
+    }
+    setFlowState(
+      sharp ? DocumentCaptureState.holdStill : DocumentCaptureState.tooBlurry,
+    );
+    return AssistedStatus.active;
+  }
+
+  /// Assisted mode engages after `assistedFallbackMs` without any
+  /// accepted quad (and never once capture has latched).
+  bool _assistedWindowOpen() {
+    final started = _searchStartedAt;
+    if (started == null || _captureLatched) return false;
+    return _now().difference(started).inMilliseconds >=
+        config.assistedFallbackMs;
+  }
+
+  /// OpenCV half of the assisted fallback: crops the guide region of the
+  /// PROCESSED-scale grayscale (the same scale the detector scores
+  /// sharpness at, so `minSharpness` stays comparable).
+  ///
+  /// `sharp`  = Laplacian variance of the crop >= `minSharpness`.
+  /// `stable` = mean abs pixel diff vs the previous guide crop
+  ///            <= `assistedMaxMeanDiff`.
+  (bool, bool) _assistedFrameVerdict(
+    cv.Mat uprightGray,
+    math.Rectangle<double> guide,
+  ) {
+    final maxDim = math.max(uprightGray.cols, uprightGray.rows);
+    final scale = maxDim > config.processingMaxDim
+        ? config.processingMaxDim / maxDim
+        : 1.0;
+    final ownsProc = scale < 1.0;
+    final proc = ownsProc
+        ? cv.resize(uprightGray, (
+            (uprightGray.cols * scale).round(),
+            (uprightGray.rows * scale).round(),
+          ), interpolation: cv.INTER_AREA)
+        : uprightGray;
+    try {
+      final x = (guide.left * scale).round().clamp(0, proc.cols - 2);
+      final y = (guide.top * scale).round().clamp(0, proc.rows - 2);
+      final w = (guide.width * scale).round().clamp(1, proc.cols - x);
+      final h = (guide.height * scale).round().clamp(1, proc.rows - y);
+      final view = proc.region(cv.Rect(x, y, w, h));
+      final crop = view.clone();
+      view.dispose();
+
+      var stable = false;
+      final prev = _prevGuideCrop;
+      if (prev != null) {
+        if (prev.cols == crop.cols && prev.rows == crop.rows) {
+          final diff = cv.absDiff(prev, crop);
+          final meanDiff = cv.mean(diff);
+          stable = meanDiff.val1 <= config.assistedMaxMeanDiff;
+          meanDiff.dispose();
+          diff.dispose();
+        }
+        prev.dispose();
+      }
+      _prevGuideCrop = crop;
+
+      final sharp = laplacianVariance(crop) >= config.minSharpness;
+      return (sharp, stable);
+    } finally {
+      if (ownsProc) proc.dispose();
+    }
+  }
+
+  /// Clears the assisted accumulator and frees the previous guide crop.
+  /// Called when a quad IS accepted, when capture latches, on
+  /// [startDetection] and on teardown.
+  void _resetAssisted() {
+    _assistedRun = 0;
+    _prevGuideCrop?.dispose();
+    _prevGuideCrop = null;
+  }
+
+  @override
+  void dispose() {
+    _resetAssisted();
+    super.dispose();
   }
 
   /// Runs detection on the full-resolution still ([stillBgr], upright)
