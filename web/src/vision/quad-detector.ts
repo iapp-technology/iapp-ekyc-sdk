@@ -8,16 +8,64 @@
  * (`DetectionParams`, mirrored by `DetectionConfig` in the Flutter SDK).
  */
 import type { CV, CvMat, ImageDataLike } from '../core/opencv-loader';
-import {
-  anglesOk,
-  aspectAccepted,
-  aspectRatio,
-  centroid,
-  orderCorners,
-  quadArea,
-  type Point,
-  type Quad,
-} from './geometry';
+import { aspectAccepted, aspectRatio, quadArea, type Point, type Quad } from './geometry';
+
+/**
+ * Extract a document's 4 corners from a contour as the farthest point from
+ * the contour centroid within each quadrant (jscanify, MIT — see NOTICE).
+ * Returns corners already ordered TL, TR, BR, BL, or null if any quadrant
+ * is empty (not a quadrilateral-ish blob).
+ */
+function extremeCornerQuad(contour: CvMat): Quad | null {
+  const data = contour.data32S;
+  const n = data.length / 2;
+  if (n < 4) return null;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < n; i++) {
+    cx += data[i * 2];
+    cy += data[i * 2 + 1];
+  }
+  cx /= n;
+  cy /= n;
+
+  let tl: Point | null = null;
+  let tr: Point | null = null;
+  let br: Point | null = null;
+  let bl: Point | null = null;
+  let dtl = -1;
+  let dtr = -1;
+  let dbr = -1;
+  let dbl = -1;
+  for (let i = 0; i < n; i++) {
+    const x = data[i * 2];
+    const y = data[i * 2 + 1];
+    const dx = x - cx;
+    const dy = y - cy;
+    const d = dx * dx + dy * dy;
+    if (dx <= 0 && dy <= 0) {
+      if (d > dtl) {
+        dtl = d;
+        tl = { x, y };
+      }
+    } else if (dx > 0 && dy <= 0) {
+      if (d > dtr) {
+        dtr = d;
+        tr = { x, y };
+      }
+    } else if (dx > 0 && dy > 0) {
+      if (d > dbr) {
+        dbr = d;
+        br = { x, y };
+      }
+    } else if (d > dbl) {
+      dbl = d;
+      bl = { x, y };
+    }
+  }
+  if (!tl || !tr || !br || !bl) return null;
+  return [tl, tr, br, bl];
+}
 
 /** All pipeline constants (docs/ALGORITHM.md). One object per platform. */
 export interface DetectionParams {
@@ -31,16 +79,14 @@ export interface DetectionParams {
   /** Canny thresholds = [lowerFactor, upperFactor] x median. */
   cannyLowerFactor: number;
   cannyUpperFactor: number;
-  /** Dilate kernel size (step 5). */
-  dilateKernelSize: number;
-  /** Top-N contours by area to examine (step 6). */
+  /** Morphological-close kernel size (step 5) — bridges card-edge gaps. */
+  closeKernelSize: number;
+  /** Top-N largest contours to examine (step 6). */
   maxContourCandidates: number;
-  /** approxPolyDP epsilon = this x arcLength (step 7). */
-  approxEpsilonFrac: number;
-  /** Contour area >= this fraction of processed-frame area (step 7). */
-  minFrameAreaFrac: number;
   /** Contour area >= this fraction of the guide-rect area (step 7). */
   minGuideAreaFrac: number;
+  /** Detected corners may sit this fraction of the guide beyond its edges. */
+  guideCornerMarginFrac: number;
   /** Corners must be >= this many px inside the processed frame border. */
   borderMarginPx: number;
   /** Aspect tolerance vs the document target (step 8). */
@@ -78,30 +124,30 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   cannyClampMax: 200,
   cannyLowerFactor: 0.66,
   cannyUpperFactor: 1.33,
-  dilateKernelSize: 3,
-  maxContourCandidates: 5,
-  approxEpsilonFrac: 0.02,
-  minFrameAreaFrac: 0.08,
-  minGuideAreaFrac: 0.5,
-  borderMarginPx: 8,
-  aspectTolerance: 0.25,
-  guideAreaMinFrac: 0.6,
-  // 1.3: users naturally overfill the guide a little; 1.15 rejected that.
-  guideAreaMaxFrac: 1.3,
-  // Handheld reality: a card held in front of a webcam always tremors a
-  // few px and acceptance flickers between direct/hull corners, so the
-  // trigger is 4-of-6 frames with 3.5% drift — ~0.5 s of a normal hold.
-  stabilityWindow: 6,
-  minStableFrames: 4,
-  maxCornerDriftFrac: 0.035,
-  // Webcams are soft; the ring buffer still submits the SHARPEST frame,
-  // and 60 comfortably rejects genuine motion blur.
-  minSharpness: 60,
+  // 7: a wider close kernel bridges glare/low-contrast gaps in the card
+  // border so it survives as one closed contour.
+  closeKernelSize: 7,
+  maxContourCandidates: 8,
+  minGuideAreaFrac: 0.45,
+  guideCornerMarginFrac: 0.12,
+  borderMarginPx: 6,
+  aspectTolerance: 0.3,
+  guideAreaMinFrac: 0.5,
+  // 1.35: users naturally overfill the guide a little.
+  guideAreaMaxFrac: 1.35,
+  // Handheld reality: a hand-held card always tremors a few px. Extreme-
+  // corner detection is far steadier frame-to-frame than approxPolyDP, so
+  // the trigger is a quick 3-of-5 frames at 5% drift — ~0.3 s hold.
+  stabilityWindow: 5,
+  minStableFrames: 3,
+  maxCornerDriftFrac: 0.05,
+  // Webcams are soft; the ring buffer still submits the SHARPEST frame.
+  minSharpness: 45,
   ringBufferSize: 5,
   // Auto-capture only fires on an aligned document quad; surface the manual
   // button quickly so a user is never stuck if the quad won't lock.
   manualFallbackMs: 4_000,
-  targetFps: 10,
+  targetFps: 12,
   guideWidthFrac: 0.8,
   cardLikeAspectMin: 1.25,
   cardLikeAspectMax: 2.4,
@@ -214,7 +260,6 @@ export function detectQuad(
   }
   const width = gray.cols;
   const height = gray.rows;
-  const frameArea = width * height;
   const guideRect = guide ?? computeGuideRect(width, height, targetAspect, params.guideWidthFrac);
   const guideArea = guideRect.width * guideRect.height;
 
@@ -236,21 +281,23 @@ export function detectQuad(
   cv.Canny(blurred, edges, lower, upper);
   blurred.delete();
 
-  // Step 5: dilate 3x3 rect kernel, 1 iteration.
+  // Step 5: morphological CLOSE with a larger kernel to bridge gaps in the
+  // card's edge (glare, low contrast, finger occlusion) so the border
+  // survives as ONE closed contour — the key to robust detection.
   const kernel = cv.getStructuringElement(
     cv.MORPH_RECT,
-    new cv.Size(params.dilateKernelSize, params.dilateKernelSize),
+    new cv.Size(params.closeKernelSize, params.closeKernelSize),
   );
-  const dilated = new cv.Mat();
-  cv.dilate(edges, dilated, kernel);
+  const closed = new cv.Mat();
+  cv.morphologyEx(edges, closed, cv.MORPH_CLOSE, kernel);
   edges.delete();
   kernel.delete();
 
-  // Step 6: external contours, sorted by area desc, top N.
+  // Step 6: external contours, largest first.
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
-  cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-  dilated.delete();
+  cv.findContours(closed, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+  closed.delete();
   hierarchy.delete();
 
   const indexed: Array<{ index: number; area: number }> = [];
@@ -258,104 +305,71 @@ export function detectQuad(
     indexed.push({ index: i, area: cv.contourArea(contours.get(i)) });
   }
   indexed.sort((a, b) => b.area - a.area);
-  const candidates = indexed.slice(0, params.maxContourCandidates);
 
   let accepted: Quad | null = null;
   let reason: RejectReason = 'noQuad';
   let cardLike = false;
 
-  // Step 7: polygon approximation with epsilon = 0.02 x arcLength.
-  // Returns 4 convex points or null.
-  const fourPointApprox = (shape: InstanceType<typeof cv.Mat>): Point[] | null => {
-    const peri = cv.arcLength(shape, true);
-    const approx = new cv.Mat();
-    cv.approxPolyDP(shape, approx, params.approxEpsilonFrac * peri, true);
-    try {
-      if (approx.rows !== 4 || !cv.isContourConvex(approx)) return null;
-      const pts: Point[] = [];
-      const data = approx.data32S;
-      for (let i = 0; i < 4; i++) pts.push({ x: data[i * 2], y: data[i * 2 + 1] });
-      return pts;
-    } finally {
-      approx.delete();
-    }
-  };
+  // Step 7 (jscanify approach, MIT — see NOTICE): the card is the largest
+  // contour that fills the guide. Its 4 corners are the points farthest
+  // from the contour's centroid in each quadrant — robust to rounded
+  // corners, broken edges and fingers, unlike a strict approxPolyDP that
+  // demands exactly 4 convex vertices.
+  const marginX = guideRect.width * params.guideCornerMarginFrac;
+  const marginY = guideRect.height * params.guideCornerMarginFrac;
 
-  for (const { index } of candidates) {
-    const contour = contours.get(index);
-    let pts = fourPointApprox(contour);
-    if (!pts) {
-      // Fingers holding a card break its outline into >4 vertices; the
-      // convex hull smooths those intrusions back into a quadrilateral.
-      const hull = new cv.Mat();
-      cv.convexHull(contour, hull, false, true);
-      pts = fourPointApprox(hull);
-      hull.delete();
+  for (const { index, area: contourArea } of indexed.slice(0, params.maxContourCandidates)) {
+    if (contourArea < params.minGuideAreaFrac * guideArea) break; // sorted desc → rest smaller
+    const quad = extremeCornerQuad(contours.get(index));
+    if (!quad) continue;
+
+    const area = quadArea(quad);
+    const aspect = aspectRatio(quad);
+    // Orientation-agnostic card-like signal (UX hint only): a substantial
+    // rectangle whose long/short ratio is landscape-ish. A near-round face
+    // blob (ratio ~1) is excluded; a portrait passport (0.71 → 1.41) counts.
+    const ratio = aspect >= 1 ? aspect : 1 / aspect;
+    if (
+      area >= params.minGuideAreaFrac * guideArea &&
+      ratio >= params.cardLikeAspectMin &&
+      ratio <= params.cardLikeAspectMax
+    ) {
+      cardLike = true;
     }
 
-    {
-      if (!pts) continue;
-      const quad = orderCorners(pts);
-
-      // Interior angles within [60, 120].
-      if (!anglesOk(quad)) continue;
-
-      const area = quadArea(quad);
-      // Area >= 8% of the processed frame.
-      if (area < params.minFrameAreaFrac * frameArea) continue;
-
-      // All corners >= borderMarginPx inside the processed frame border.
-      const inBorder = quad.every(
-        (p) =>
-          p.x >= params.borderMarginPx &&
-          p.y >= params.borderMarginPx &&
-          p.x <= width - params.borderMarginPx &&
-          p.y <= height - params.borderMarginPx,
-      );
-      if (!inBorder) continue;
-
-      // From here on the candidate LOOKS like a document, so failures
-      // produce actionable UX reasons instead of silent rejection.
-      const aspect = aspectRatio(quad);
-      // "Card-like present": a substantial (>= 50% of guide) rectangle
-      // with a landscape aspect. Faces/heads never yield a large 4-point
-      // convex landscape quad, so assisted capture gates on this instead
-      // of raw pixel motion (a still face was passing the motion gate).
-      if (
-        area >= params.minGuideAreaFrac * guideArea &&
-        aspect >= params.cardLikeAspectMin &&
-        aspect <= params.cardLikeAspectMax
-      ) {
-        cardLike = true;
-      }
-
-      if (area < params.minGuideAreaFrac * guideArea) {
-        reason = 'moveCloser'; // step 7 area floor vs guide
-        continue;
-      }
-      if (area < params.guideAreaMinFrac * guideArea) {
-        reason = 'moveCloser'; // step 8: < 60% of guide area
-        continue;
-      }
-
-      const c = centroid(quad);
-      const centroidInGuide =
-        c.x >= guideRect.x &&
-        c.x <= guideRect.x + guideRect.width &&
-        c.y >= guideRect.y &&
-        c.y <= guideRect.y + guideRect.height;
-      if (
-        !aspectAccepted(aspect, targetAspect, params.aspectTolerance) ||
-        !centroidInGuide ||
-        area > params.guideAreaMaxFrac * guideArea
-      ) {
-        reason = 'alignCard'; // step 8: aspect / centroid / oversize failure
-        continue;
-      }
-
-      accepted = quad;
-      break;
+    // Corners must sit within the guide (+ margin) and inside the frame.
+    const withinGuide = quad.every(
+      (p) =>
+        p.x >= guideRect.x - marginX &&
+        p.x <= guideRect.x + guideRect.width + marginX &&
+        p.y >= guideRect.y - marginY &&
+        p.y <= guideRect.y + guideRect.height + marginY,
+    );
+    const inBorder = quad.every(
+      (p) =>
+        p.x >= params.borderMarginPx &&
+        p.y >= params.borderMarginPx &&
+        p.x <= width - params.borderMarginPx &&
+        p.y <= height - params.borderMarginPx,
+    );
+    if (!withinGuide || !inBorder) {
+      reason = 'alignCard';
+      continue;
     }
+    if (area < params.guideAreaMinFrac * guideArea) {
+      reason = 'moveCloser';
+      continue;
+    }
+    if (area > params.guideAreaMaxFrac * guideArea) {
+      reason = 'alignCard';
+      continue;
+    }
+    if (!aspectAccepted(aspect, targetAspect, params.aspectTolerance)) {
+      reason = 'alignCard';
+      continue;
+    }
+    accepted = quad;
+    break;
   }
   contours.delete();
 

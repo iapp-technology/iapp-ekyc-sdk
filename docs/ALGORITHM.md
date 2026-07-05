@@ -25,41 +25,42 @@ is dropped (never queued) while a previous frame is still being processed.
 4. **Adaptive Canny**: let `m` = median of the grayscale histogram;
    thresholds `lower = 0.66·m`, `upper = 1.33·m`, each clamped to
    **[30, 200]**.
-5. **Dilate** with a 3×3 rect kernel, 1 iteration (closes small edge gaps).
+5. **Morphological close** with a **7×7** rect kernel (`closeKernelSize`) —
+   bridges glare / low-contrast / finger gaps in the card border so it
+   survives as ONE closed contour. (Replaced a plain 3×3 dilate; the wider
+   close is the single biggest robustness win.)
 6. **Contours**: `findContours(RETR_EXTERNAL, CHAIN_APPROX_SIMPLE)`, sort by
-   area descending, examine the top **5** (`maxContourCandidates`).
-7. **Quadrilateral test** per candidate: `approxPolyDP(ε = 0.02 × arcLength)`;
-   if that yields ≠4 points or a non-convex shape, retry on the contour's
-   **convex hull** (fingers holding a card break its outline into >4
-   vertices; the hull smooths those intrusions back into a quadrilateral).
-   Accept iff ALL of:
-   - exactly 4 points;
-   - convex (`isContourConvex`);
-   - every interior angle ∈ **[60°, 120°]**;
-   - contour area ≥ **8%** of processed-frame area (`minFrameAreaFrac`)
-     AND ≥ **50%** of the guide-rect area (`minGuideAreaFrac`);
-   - all corners ≥ **8 px** inside the processed frame border.
-8. **Corner ordering & shape checks**
-   - Order TL, TR, BR, BL: TL = min(x+y), BR = max(x+y), TR = max(x−y),
-     BL = min(x−y).
+   area descending, examine the top **8** (`maxContourCandidates`).
+7. **Corner extraction (jscanify method, MIT — see NOTICE):** the document
+   is the largest contour filling the guide. Its 4 corners are the points
+   **farthest from the contour centroid within each quadrant** (TL = max
+   distance among points with dx≤0, dy≤0; TR dx>0,dy≤0; BR dx>0,dy>0;
+   BL dx≤0,dy>0), yielding corners already ordered TL, TR, BR, BL. This is
+   robust to rounded corners, broken edges and fingers — unlike a strict
+   `approxPolyDP` demanding exactly 4 convex vertices with interior-angle
+   limits, which flickered frame-to-frame and rejected well-presented
+   cards. A candidate is skipped if any quadrant is empty; the first
+   (largest-first) candidate passing step 8 wins.
+8. **Acceptance checks** on the extreme-corner quad:
    - Aspect ratio = mean(top edge, bottom edge) / mean(left edge, right
      edge). Target **1.586** for ID-1 cards (Thai national ID, driver
      license, bank book — 85.60 × 53.98 mm) and **0.71** for passports
      (88 × 125 mm data page held **portrait**, the natural reading
      orientation — photo bottom-left, MRZ across the bottom). Accept
-     within **±0.25** (`aspectTolerance`).
-   - Guide alignment: quad centroid inside the guide rect AND quad area
-     between **60%–130%** of guide area (users naturally overfill the
-     guide slightly).
+     within **±0.30** (`aspectTolerance`).
+   - Corners must sit within the guide expanded by
+     `guideCornerMarginFrac = 0.12` AND inside the frame border
+     (`borderMarginPx = 6`); quad area between **50%–135%** of guide area
+     (`guideAreaMinFrac`/`guideAreaMaxFrac` — users naturally overfill).
 9. **Stability tracking** (pure code, no OpenCV — unit tested):
-   sliding window of the last **6** processed frames (`stabilityWindow`).
+   sliding window of the last **5** processed frames (`stabilityWindow`).
    A frame is *stable* if it was accepted AND its maximum corner
-   displacement vs. the previous accepted frame is < **3.5%** of the frame
-   diagonal (`maxCornerDriftFrac` — handheld cards always tremor a few
-   px). Trigger condition: ≥ **4 of 6** frames stable (`minStableFrames`),
-   ~0.5 s of a normal hold at 10 fps.
+   displacement vs. the previous accepted frame is < **5%** of the frame
+   diagonal (`maxCornerDriftFrac` — handheld cards always tremor, and
+   extreme-corner detection is steady enough to allow it). Trigger:
+   ≥ **3 of 5** frames stable (`minStableFrames`), ~0.3 s of a normal hold.
 10. **Sharpness**: `Laplacian(CV_64F)` on the quad's bounding-box crop of
-    the 480-px grayscale; score = variance. Sharp iff score ≥ **60**
+    the 480-px grayscale; score = variance. Sharp iff score ≥ **45**
     (`minSharpness` — consumer cameras are soft, and the ring buffer
     submits the sharpest frame anyway). Keep a ring buffer of the last
     **5** accepted frames (corners + sharpness + source reference).

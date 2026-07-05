@@ -131,6 +131,7 @@ class CaptureSession {
   private lastQuadProcessed: Quad | null = null;
   private processedWidth = 0;
   private processedHeight = 0;
+  private freezeUrl: string | null = null;
 
   constructor(
     api: EkycApiClient,
@@ -322,6 +323,7 @@ class CaptureSession {
     if (!overlay || !cv) return;
     this.stopLoop();
     this.setState('capturing');
+    this.playShutter();
     try {
       const video = overlay.video;
       const spec = DOCUMENT_SPECS[this.options.documentType];
@@ -385,6 +387,9 @@ class CaptureSession {
         throw new FileTooLargeError('Captured image exceeds the 10 MB upload limit');
       }
 
+      // Freeze the exact image being uploaded over the live video, so the
+      // user sees what was captured while it uploads.
+      this.showFreeze(blob);
       this.setState('uploading');
       // NOTE: if this request fails it is NOT retried (billable request,
       // docs/API_CONTRACTS.md). The host app may start a fresh capture.
@@ -396,6 +401,28 @@ class CaptureSession {
     } catch (e) {
       this.fail(e);
     }
+  }
+
+  /** Camera-shutter flash: snap to opaque white, then fade out. */
+  private playShutter(): void {
+    const flash = this.overlay?.flash;
+    if (!flash) return;
+    flash.style.transition = 'none';
+    flash.style.opacity = '0.85';
+    // Force a reflow so the opacity:0 transition actually animates.
+    void flash.offsetWidth;
+    flash.style.transition = 'opacity 320ms ease-out';
+    flash.style.opacity = '0';
+  }
+
+  /** Show the captured JPEG frozen over the video during upload. */
+  private showFreeze(blob: Blob): void {
+    const freeze = this.overlay?.freeze;
+    if (!freeze) return;
+    if (this.freezeUrl) URL.revokeObjectURL(this.freezeUrl);
+    this.freezeUrl = URL.createObjectURL(blob);
+    freeze.src = this.freezeUrl;
+    freeze.style.display = 'block';
   }
 
   private cancel(): void {
@@ -439,5 +466,9 @@ class CaptureSession {
     this.ring = [];
     this.procCanvas = null;
     this.cv = null;
+    if (this.freezeUrl) {
+      URL.revokeObjectURL(this.freezeUrl);
+      this.freezeUrl = null;
+    }
   }
 }

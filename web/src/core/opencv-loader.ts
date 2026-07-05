@@ -67,6 +67,7 @@ export interface CV {
   GaussianBlur(src: CvMat, dst: CvMat, ksize: CvSize, sigmaX: number): void;
   Canny(src: CvMat, dst: CvMat, threshold1: number, threshold2: number): void;
   dilate(src: CvMat, dst: CvMat, kernel: CvMat): void;
+  morphologyEx(src: CvMat, dst: CvMat, op: number, kernel: CvMat): void;
   getStructuringElement(shape: number, ksize: CvSize): CvMat;
   findContours(src: CvMat, contours: CvMatVector, hierarchy: CvMat, mode: number, method: number): void;
   contourArea(contour: CvMat): number;
@@ -84,6 +85,7 @@ export interface CV {
   INTER_AREA: number;
   INTER_LINEAR: number;
   MORPH_RECT: number;
+  MORPH_CLOSE: number;
   RETR_EXTERNAL: number;
   CHAIN_APPROX_SIMPLE: number;
   CV_8UC1: number;

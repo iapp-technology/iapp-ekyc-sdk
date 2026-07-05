@@ -25,6 +25,11 @@ NOT redistributed in this repository:
   Apache License 2.0. Used on the Web platform for face landmark and
   blendshape estimation.
 
+* jscanify (https://github.com/puffinsoft/jscanify) — MIT License.
+  The document-corner extraction method (largest contour → farthest point
+  from the centroid within each quadrant) used in the document-capture
+  detector is derived from jscanify. Original work Copyright (c) ColonelParrot.
+
 The iApp name, the iApp logo, and "iApp eKYC" are trademarks of
 iApp Technology Co., Ltd. Use of this SDK does not grant any rights to
 use these trademarks.

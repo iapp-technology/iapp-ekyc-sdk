@@ -32,6 +32,10 @@ export interface OverlayElements {
   progressBar: HTMLDivElement;
   manualButton: HTMLButtonElement;
   cancelButton: HTMLButtonElement;
+  /** White flash layer for the camera-shutter effect. */
+  flash: HTMLDivElement;
+  /** Frozen still of the captured image, shown over the video on upload. */
+  freeze: HTMLImageElement;
   destroy(): void;
 }
 
@@ -85,6 +89,18 @@ export function buildOverlay(
   const canvas = document.createElement('canvas');
   canvas.style.cssText =
     'position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;';
+
+  // Frozen still shown over the video while uploading, so the user sees the
+  // exact image being submitted. Hidden until capture.
+  const freeze = document.createElement('img');
+  freeze.alt = '';
+  freeze.style.cssText =
+    'position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; display: none;';
+
+  // White shutter-flash layer (fades out via a CSS transition on opacity).
+  const flash = document.createElement('div');
+  flash.style.cssText =
+    'position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity 320ms ease-out;';
 
   const chip = document.createElement('div');
   chip.className = 'iapp-ekyc-chip';
@@ -143,7 +159,8 @@ export function buildOverlay(
   styleButton(cancelButton, 'ghost');
 
   controls.append(manualButton, cancelButton);
-  root.append(video, canvas, chip, progressTrack, controls);
+  // freeze sits above the video, flash above everything visual.
+  root.append(video, freeze, canvas, chip, progressTrack, controls, flash);
   mount.appendChild(root);
 
   return {
@@ -155,6 +172,8 @@ export function buildOverlay(
     progressBar,
     manualButton,
     cancelButton,
+    flash,
+    freeze,
     destroy(): void {
       root.remove();
     },
@@ -208,8 +227,13 @@ function drawCardSchematic(
   const unit = Math.min(guide.width, guide.height);
 
   ctx.save();
-  ctx.globalAlpha = 0.5;
-  ctx.lineWidth = Math.max(1, unit * 0.006);
+  // Faint panel so the schematic reads over any camera background.
+  ctx.globalAlpha = 0.14;
+  ctx.fillStyle = ink;
+  ctx.fillRect(guide.x, guide.y, guide.width, guide.height);
+
+  ctx.globalAlpha = 0.7;
+  ctx.lineWidth = Math.max(1.5, unit * 0.01);
 
   for (const h of layout.hints) {
     const x = px(h.x);
