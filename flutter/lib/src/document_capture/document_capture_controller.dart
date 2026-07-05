@@ -138,6 +138,15 @@ class DocumentCaptureController extends ChangeNotifier {
   cv.Mat? _prevGuideCrop;
   bool _assistedCapture = false;
 
+  /// Empty-scene guide crop sampled once per session at
+  /// `processedFrameCount >= 5` (auto-exposure settled) on a no-quad frame.
+  /// Assisted frames only count while the current crop has moved away from
+  /// it — an empty desk is sharp and stable too (docs/ALGORITHM.md,
+  /// "Presence gate"). Persists across quad-accepted resets; freed only on
+  /// [startDetection] and [dispose].
+  cv.Mat? _baselineGuideCrop;
+  int _processedFrameCount = 0;
+
   /// Corners of the most recent accepted frame (upright source coords).
   List<math.Point<double>>? get lastCorners =>
       _buffer.isEmpty ? null : _buffer.last.corners;
@@ -175,7 +184,9 @@ class DocumentCaptureController extends ChangeNotifier {
     _searchStartedAt = _now();
     _captureLatched = false;
     _assistedCapture = false;
+    _processedFrameCount = 0;
     _resetAssisted();
+    _freeBaseline();
     notifyListeners();
   }
 
@@ -220,12 +231,25 @@ class DocumentCaptureController extends ChangeNotifier {
       targetAspect: documentType.aspectRatio,
     );
 
+    // Presence baseline for assisted mode: the empty scene, sampled after
+    // ~5 frames so camera auto-exposure has settled, and only from a frame
+    // with no document detected (docs/ALGORITHM.md, "Presence gate").
+    _processedFrameCount++;
+    if (_baselineGuideCrop == null &&
+        _processedFrameCount >= 5 &&
+        !result.isFound) {
+      _baselineGuideCrop = _cloneGuideCrop(uprightGray, guide);
+    }
+
     if (!result.isFound) {
       tracker.addFrame(null);
       var assisted = AssistedStatus.inactive;
       if (_assistedWindowOpen()) {
-        final (sharp, stable) = _assistedFrameVerdict(uprightGray, guide);
-        assisted = assistedTick(sharp: sharp, stable: stable);
+        final (sharp, stable, present) = _assistedFrameVerdict(
+          uprightGray,
+          guide,
+        );
+        assisted = assistedTick(sharp: sharp, stable: stable, present: present);
       }
       if (assisted == AssistedStatus.captured) return true;
       if (assisted == AssistedStatus.inactive) {
@@ -289,9 +313,23 @@ class DocumentCaptureController extends ChangeNotifier {
   /// returns [AssistedStatus.captured] once `assistedStableFrames`
   /// consecutive sharp+stable frames accumulate. While accumulating, the
   /// state chip shows holdStill (sharp) or tooBlurry.
+  ///
+  /// [present] is the presence gate (docs/ALGORITHM.md): an empty desk is
+  /// sharp and stable too, so a frame whose guide crop has not moved away
+  /// from the start-of-session baseline resets the run and holds
+  /// `searching` — it never accumulates towards a capture.
   @visibleForTesting
-  AssistedStatus assistedTick({required bool sharp, required bool stable}) {
+  AssistedStatus assistedTick({
+    required bool sharp,
+    required bool stable,
+    bool present = true,
+  }) {
     if (!_assistedWindowOpen()) return AssistedStatus.inactive;
+    if (!present) {
+      _assistedRun = 0;
+      setFlowState(DocumentCaptureState.searching);
+      return AssistedStatus.active;
+    }
     _assistedRun = sharp && stable ? _assistedRun + 1 : 0;
     if (_assistedRun >= config.assistedStableFrames) {
       _resetAssisted();
@@ -319,13 +357,39 @@ class DocumentCaptureController extends ChangeNotifier {
   /// PROCESSED-scale grayscale (the same scale the detector scores
   /// sharpness at, so `minSharpness` stays comparable).
   ///
-  /// `sharp`  = Laplacian variance of the crop >= `minSharpness`.
-  /// `stable` = mean abs pixel diff vs the previous guide crop
-  ///            <= `assistedMaxMeanDiff`.
-  (bool, bool) _assistedFrameVerdict(
+  /// `sharp`   = Laplacian variance of the crop >= `minSharpness`.
+  /// `stable`  = mean abs pixel diff vs the previous guide crop
+  ///             <= `assistedMaxMeanDiff`.
+  /// `present` = mean abs pixel diff vs the start-of-session baseline crop
+  ///             >= `assistedPresenceMinDiff` (presence gate; false while
+  ///             no baseline has been sampled yet).
+  (bool, bool, bool) _assistedFrameVerdict(
     cv.Mat uprightGray,
     math.Rectangle<double> guide,
   ) {
+    final crop = _cloneGuideCrop(uprightGray, guide);
+
+    // Presence gate: an empty desk is sharp and stable too. Only frames
+    // whose guide content moved away from the start-of-session baseline
+    // may count. No baseline yet (camera still settling) -> not present.
+    final baseline = _baselineGuideCrop;
+    final baseDiff = baseline == null ? null : _guideMeanDiff(baseline, crop);
+    final present =
+        baseDiff != null && baseDiff >= config.assistedPresenceMinDiff;
+
+    final prev = _prevGuideCrop;
+    final prevDiff = prev == null ? null : _guideMeanDiff(prev, crop);
+    final stable = prevDiff != null && prevDiff <= config.assistedMaxMeanDiff;
+    prev?.dispose();
+    _prevGuideCrop = crop;
+
+    final sharp = laplacianVariance(crop) >= config.minSharpness;
+    return (sharp, stable, present);
+  }
+
+  /// Clones the guide region of the PROCESSED-scale grayscale into a fresh
+  /// Mat (mirrors the Web SDK's `cloneGuideCrop`); the caller owns it.
+  cv.Mat _cloneGuideCrop(cv.Mat uprightGray, math.Rectangle<double> guide) {
     final maxDim = math.max(uprightGray.cols, uprightGray.rows);
     final scale = maxDim > config.processingMaxDim
         ? config.processingMaxDim / maxDim
@@ -345,40 +409,46 @@ class DocumentCaptureController extends ChangeNotifier {
       final view = proc.region(cv.Rect(x, y, w, h));
       final crop = view.clone();
       view.dispose();
-
-      var stable = false;
-      final prev = _prevGuideCrop;
-      if (prev != null) {
-        if (prev.cols == crop.cols && prev.rows == crop.rows) {
-          final diff = cv.absDiff(prev, crop);
-          final meanDiff = cv.mean(diff);
-          stable = meanDiff.val1 <= config.assistedMaxMeanDiff;
-          meanDiff.dispose();
-          diff.dispose();
-        }
-        prev.dispose();
-      }
-      _prevGuideCrop = crop;
-
-      final sharp = laplacianVariance(crop) >= config.minSharpness;
-      return (sharp, stable);
+      return crop;
     } finally {
       if (ownsProc) proc.dispose();
     }
   }
 
+  /// Mean abs pixel diff between two guide crops (mirrors the Web SDK's
+  /// `guideMeanDiff`). Returns null when the crops differ in size, so the
+  /// caller can skip the comparison rather than fault.
+  double? _guideMeanDiff(cv.Mat a, cv.Mat b) {
+    if (a.cols != b.cols || a.rows != b.rows) return null;
+    final diff = cv.absDiff(a, b);
+    final meanDiff = cv.mean(diff);
+    final value = meanDiff.val1;
+    meanDiff.dispose();
+    diff.dispose();
+    return value;
+  }
+
   /// Clears the assisted accumulator and frees the previous guide crop.
   /// Called when a quad IS accepted, when capture latches, on
-  /// [startDetection] and on teardown.
+  /// [startDetection] and on teardown. The presence baseline is NOT freed
+  /// here — it lives for the whole session (see [_freeBaseline]).
   void _resetAssisted() {
     _assistedRun = 0;
     _prevGuideCrop?.dispose();
     _prevGuideCrop = null;
   }
 
+  /// Frees the presence baseline. It outlives quad-accepted resets, so it
+  /// is released only on [startDetection] (new session) and [dispose].
+  void _freeBaseline() {
+    _baselineGuideCrop?.dispose();
+    _baselineGuideCrop = null;
+  }
+
   @override
   void dispose() {
     _resetAssisted();
+    _freeBaseline();
     super.dispose();
   }
 

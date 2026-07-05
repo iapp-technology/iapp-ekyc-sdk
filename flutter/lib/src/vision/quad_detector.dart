@@ -65,6 +65,12 @@ class DetectionConfig {
   /// Max mean abs pixel diff (0–255) between guide crops to count stable.
   final double assistedMaxMeanDiff;
 
+  /// Presence gate: assisted frames only count when the guide crop differs
+  /// from the scene captured at camera start by at least this mean abs
+  /// pixel diff — an empty desk is sharp and stable too, and must never
+  /// auto-capture.
+  final double assistedPresenceMinDiff;
+
   /// Frame-processing budget (frames per second).
   final int maxProcessingFps;
 
@@ -95,6 +101,7 @@ class DetectionConfig {
     this.assistedFallbackMs = 3000,
     this.assistedStableFrames = 4,
     this.assistedMaxMeanDiff = 10,
+    this.assistedPresenceMinDiff = 12,
     this.maxProcessingFps = 10,
   });
 }

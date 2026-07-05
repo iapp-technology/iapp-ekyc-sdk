@@ -114,6 +114,46 @@ void main() {
     );
   });
 
+  test(
+    'sharp+stable frames that are NOT present never capture (empty desk)',
+    () {
+      advance(fallbackMs);
+
+      // An empty desk is sharp and stable too, but its guide crop never
+      // moves away from the start-of-session baseline (present == false).
+      // Far more than the capture threshold of frames must not accumulate.
+      for (var i = 0; i < stableFrames * 3; i++) {
+        expect(
+          controller.assistedTick(sharp: true, stable: true, present: false),
+          AssistedStatus.active,
+        );
+        expect(controller.state, DocumentCaptureState.searching);
+      }
+      expect(controller.captureLatched, isFalse);
+      expect(controller.assistedCaptureTriggered, isFalse);
+
+      // A not-present frame also resets a run already in progress: once a
+      // document appears (present == true) the full consecutive run is
+      // still required from scratch.
+      for (var i = 0; i < stableFrames - 1; i++) {
+        controller.assistedTick(sharp: true, stable: true, present: true);
+      }
+      controller.assistedTick(sharp: true, stable: true, present: false);
+      expect(controller.captureLatched, isFalse);
+      for (var i = 0; i < stableFrames - 1; i++) {
+        expect(
+          controller.assistedTick(sharp: true, stable: true, present: true),
+          AssistedStatus.active,
+        );
+      }
+      expect(controller.captureLatched, isFalse);
+      expect(
+        controller.assistedTick(sharp: true, stable: true, present: true),
+        AssistedStatus.captured,
+      );
+    },
+  );
+
   test('startDetection clears assisted state for a retry', () {
     advance(fallbackMs);
     for (var i = 0; i < stableFrames; i++) {
