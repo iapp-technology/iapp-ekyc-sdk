@@ -134,8 +134,6 @@ class CaptureSession {
   private captureStartMs = 0;
   private assistedRun = 0;
   private prevGuideCrop: CvMat | null = null;
-  private baselineGuideCrop: CvMat | null = null;
-  private processedFrameCount = 0;
 
   constructor(
     api: EkycApiClient,
@@ -240,17 +238,6 @@ class CaptureSession {
       );
       const detection = detectQuad(cv, imageData, spec.aspect, guide, this.params);
       try {
-        // Presence baseline for assisted mode: the empty scene, sampled
-        // after ~5 frames so camera auto-exposure has settled, and only
-        // from a frame with no document detected.
-        this.processedFrameCount += 1;
-        if (
-          this.baselineGuideCrop === null &&
-          this.processedFrameCount >= 5 &&
-          !detection.quad
-        ) {
-          this.baselineGuideCrop = this.cloneGuideCrop(cv, detection.gray, guide);
-        }
         tracker.push(detection.quad);
         if (detection.quad) {
           this.resetAssisted();
@@ -277,7 +264,7 @@ class CaptureSession {
         } else {
           const assisted =
             Date.now() - this.captureStartMs >= this.params.assistedFallbackMs
-              ? this.assistedTick(cv, detection.gray, guide)
+              ? this.assistedTick(cv, detection.gray, guide, detection.cardLike)
               : 'inactive';
           if (assisted === 'captured') return;
           if (assisted === 'inactive') {
@@ -340,15 +327,13 @@ class CaptureSession {
     return crop;
   }
 
-  private assistedTick(cv: CV, gray: CvMat, guide: GuideRect): 'captured' | 'active' | 'inactive' {
+  private assistedTick(
+    cv: CV,
+    gray: CvMat,
+    guide: GuideRect,
+    cardLike: boolean,
+  ): 'captured' | 'active' | 'inactive' {
     const crop = this.cloneGuideCrop(cv, gray, guide);
-
-    // Presence gate: an empty desk is sharp and stable too. Only frames
-    // whose guide content moved away from the start-of-session baseline
-    // may count. No baseline yet (camera still settling) -> not present.
-    const present =
-      this.baselineGuideCrop !== null &&
-      this.guideMeanDiff(cv, this.baselineGuideCrop, crop) >= this.params.assistedPresenceMinDiff;
 
     let stable = false;
     if (this.prevGuideCrop) {
@@ -357,7 +342,10 @@ class CaptureSession {
     }
     this.prevGuideCrop = crop;
 
-    if (!present) {
+    // Card-like gate: a real rectangular document must be in view. A face,
+    // hand, or empty scene is never cardLike, so it can never auto-capture
+    // no matter how sharp and still it is.
+    if (!cardLike) {
       this.assistedRun = 0;
       this.setState('searching');
       return 'active';
@@ -382,14 +370,6 @@ class CaptureSession {
     if (this.prevGuideCrop) {
       this.prevGuideCrop.delete();
       this.prevGuideCrop = null;
-    }
-  }
-
-  /** Baseline lives for the whole session; freed only at teardown. */
-  private freeBaseline(): void {
-    if (this.baselineGuideCrop) {
-      this.baselineGuideCrop.delete();
-      this.baselineGuideCrop = null;
     }
   }
 
@@ -525,7 +505,6 @@ class CaptureSession {
       this.manualTimer = null;
     }
     this.resetAssisted();
-    this.freeBaseline();
   }
 
   /** Clean DOM/camera/timer teardown. Safe to call multiple times. */

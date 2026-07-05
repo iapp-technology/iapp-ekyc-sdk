@@ -63,6 +63,32 @@ function uniformFrame(value: number): ImageDataLike {
   return { data, width: WIDTH, height: HEIGHT };
 }
 
+/**
+ * A bright ellipse on a dark background — a face/head stand-in. It fills a
+ * large part of the frame but is NOT a rectangle, so it must never be
+ * flagged `cardLike` (the "still face auto-uploads" bug).
+ */
+function faceBlobFrame(): ImageDataLike {
+  const data = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+  const cx = WIDTH / 2;
+  const cy = HEIGHT / 2;
+  const rx = 130; // head-ish, near-round (aspect ~1.0)
+  const ry = 150;
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const dx = (x - cx) / rx;
+      const dy = (y - cy) / ry;
+      const v = dx * dx + dy * dy <= 1 ? 230 : 30;
+      const i = (y * WIDTH + x) * 4;
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
+      data[i + 3] = 255;
+    }
+  }
+  return { data, width: WIDTH, height: HEIGHT };
+}
+
 describe('OpenCV.js smoke (Node)', () => {
   let cv: CV;
 
@@ -101,11 +127,31 @@ describe('OpenCV.js smoke (Node)', () => {
     }
   });
 
+  it('flags the synthetic card as cardLike', () => {
+    const result = detectQuad(cv, syntheticFrame(), ASPECT_ID1);
+    try {
+      expect(result.cardLike).toBe(true);
+    } finally {
+      result.gray.delete();
+    }
+  });
+
+  it('does NOT flag a face-shaped blob as cardLike (still-face guard)', () => {
+    const result = detectQuad(cv, faceBlobFrame(), ASPECT_ID1);
+    try {
+      expect(result.quad).toBeNull(); // not an accepted document
+      expect(result.cardLike).toBe(false); // and not card-like either
+    } finally {
+      result.gray.delete();
+    }
+  });
+
   it('recovers the quad via convex hull when a finger notch breaks the edge', () => {
     const result = detectQuad(cv, notchedFrame(), ASPECT_ID1);
     try {
       expect(result.reason).toBeNull();
       expect(result.quad).not.toBeNull();
+      expect(result.cardLike).toBe(true);
       const quad = result.quad!;
       // Hull corners still land on the card's true corners.
       const expected = [

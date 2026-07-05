@@ -74,12 +74,12 @@ export interface DetectionParams {
   /** Max mean abs pixel diff (0-255) between guide crops to count stable. */
   assistedMaxMeanDiff: number;
   /**
-   * Presence gate: assisted frames only count when the guide crop differs
-   * from the scene captured at camera start by at least this mean abs
-   * pixel diff — an empty desk is sharp and stable too, and must never
-   * auto-capture.
+   * Aspect window for the `cardLike` signal — a landscape rectangle. Wide
+   * enough for ID-1 (1.586) and passport (1.42) with slack, tight enough
+   * to exclude a near-square/portrait face outline.
    */
-  assistedPresenceMinDiff: number;
+  cardLikeAspectMin: number;
+  cardLikeAspectMax: number;
 }
 
 export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
@@ -115,7 +115,8 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   assistedFallbackMs: 3_000,
   assistedStableFrames: 4,
   assistedMaxMeanDiff: 10,
-  assistedPresenceMinDiff: 12,
+  cardLikeAspectMin: 1.25,
+  cardLikeAspectMax: 2.4,
 };
 
 export interface GuideRect {
@@ -132,6 +133,15 @@ export interface QuadDetectionResult {
   /** Accepted quad (TL,TR,BR,BL) in PROCESSED-frame coordinates, or null. */
   quad: Quad | null;
   reason: RejectReason | null;
+  /**
+   * A substantial, roughly card-shaped rectangle was found this frame —
+   * a 4-point convex contour (or hull) that filled a large part of the
+   * guide with a landscape aspect, EVEN IF it was rejected for
+   * aspect/centroid/oversize. This is the "a document-like object is
+   * present" signal; a face or empty scene is never cardLike, so assisted
+   * capture keys off it (not raw pixel motion).
+   */
+  cardLike: boolean;
   /**
    * Processed grayscale mat (post-downscale, pre-blur) for sharpness
    * scoring. THE CALLER MUST CALL `.delete()` on it.
@@ -264,6 +274,7 @@ export function detectQuad(
 
   let accepted: Quad | null = null;
   let reason: RejectReason = 'noQuad';
+  let cardLike = false;
 
   // Step 7: polygon approximation with epsilon = 0.02 x arcLength.
   // Returns 4 convex points or null.
@@ -317,6 +328,19 @@ export function detectQuad(
 
       // From here on the candidate LOOKS like a document, so failures
       // produce actionable UX reasons instead of silent rejection.
+      const aspect = aspectRatio(quad);
+      // "Card-like present": a substantial (>= 50% of guide) rectangle
+      // with a landscape aspect. Faces/heads never yield a large 4-point
+      // convex landscape quad, so assisted capture gates on this instead
+      // of raw pixel motion (a still face was passing the motion gate).
+      if (
+        area >= params.minGuideAreaFrac * guideArea &&
+        aspect >= params.cardLikeAspectMin &&
+        aspect <= params.cardLikeAspectMax
+      ) {
+        cardLike = true;
+      }
+
       if (area < params.minGuideAreaFrac * guideArea) {
         reason = 'moveCloser'; // step 7 area floor vs guide
         continue;
@@ -326,7 +350,6 @@ export function detectQuad(
         continue;
       }
 
-      const aspect = aspectRatio(quad);
       const c = centroid(quad);
       const centroidInGuide =
         c.x >= guideRect.x &&
@@ -351,6 +374,7 @@ export function detectQuad(
   return {
     quad: accepted,
     reason: accepted ? null : reason,
+    cardLike: accepted !== null || cardLike,
     gray,
     scaleBack,
     processedWidth: width,

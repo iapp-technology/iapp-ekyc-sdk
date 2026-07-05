@@ -100,14 +100,15 @@ guide crop is sharp (Laplacian ≥ `minSharpness`) AND motion-stable
 directly (no perspective warp). This keeps hands-over-edges scenarios
 automatic instead of falling through to the manual button.
 
-**Presence gate** (mandatory for assisted mode): an empty desk is sharp
-and stable too. A baseline guide crop is sampled ≥5 frames after camera
-start (auto-exposure settled) from a frame with no detected document;
-assisted frames count ONLY while the current guide crop differs from that
-baseline by mean abs diff ≥ `assistedPresenceMinDiff = 12`. If the
-document is already in the guide at start, the baseline is never sampled
-and assisted mode stays off — the quad path or the manual button covers
-that session.
+**Card-like gate** (mandatory for assisted mode): an empty desk, a hand,
+or a still face are all sharp and stable too, so assisted capture also
+requires a `cardLike` frame — a substantial (≥ `minGuideAreaFrac` of the
+guide) 4-point convex contour (direct or via convex hull) with a
+landscape aspect in `[cardLikeAspectMin, cardLikeAspectMax] = [1.25, 2.4]`,
+even if it was rejected for tight aspect / centroid / oversize. A face or
+head never yields a large landscape rectangle, so it can never
+auto-capture. If no `cardLike` frame is seen, assisted mode never fires
+and the manual button (10 s) is the fallback.
 
 A **manual capture button** appears after **10 s** without auto-capture
 (`manualFallbackMs = 10000`).
