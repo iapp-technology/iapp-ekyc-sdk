@@ -5,10 +5,13 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iapp_ekyc_sdk/src/document_capture/document_capture_controller.dart';
 import 'package:iapp_ekyc_sdk/src/document_capture/document_type.dart';
+import 'package:iapp_ekyc_sdk/src/vision/quad_detector.dart';
 
 void main() {
-  const fallbackMs = 4000;
-  const stableFrames = 6;
+  // Derive from the live defaults so tuning constants never breaks tests.
+  const config = DetectionConfig();
+  final fallbackMs = config.assistedFallbackMs;
+  final stableFrames = config.assistedStableFrames;
 
   late DateTime now;
   late DocumentCaptureController controller;

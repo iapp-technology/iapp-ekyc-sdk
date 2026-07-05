@@ -92,17 +92,22 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   guideAreaMinFrac: 0.6,
   // 1.3: users naturally overfill the guide a little; 1.15 rejected that.
   guideAreaMaxFrac: 1.3,
-  stabilityWindow: 8,
-  minStableFrames: 6,
-  maxCornerDriftFrac: 0.02,
-  minSharpness: 120,
+  // Handheld reality: a card held in front of a webcam always tremors a
+  // few px and acceptance flickers between direct/hull corners, so the
+  // trigger is 4-of-6 frames with 3.5% drift — ~0.5 s of a normal hold.
+  stabilityWindow: 6,
+  minStableFrames: 4,
+  maxCornerDriftFrac: 0.035,
+  // Webcams are soft; the ring buffer still submits the SHARPEST frame,
+  // and 60 comfortably rejects genuine motion blur.
+  minSharpness: 60,
   ringBufferSize: 5,
   manualFallbackMs: 10_000,
   targetFps: 10,
   guideWidthFrac: 0.8,
-  assistedFallbackMs: 4_000,
-  assistedStableFrames: 6,
-  assistedMaxMeanDiff: 6,
+  assistedFallbackMs: 3_000,
+  assistedStableFrames: 4,
+  assistedMaxMeanDiff: 10,
 };
 
 export interface GuideRect {

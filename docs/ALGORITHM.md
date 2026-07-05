@@ -51,15 +51,17 @@ is dropped (never queued) while a previous frame is still being processed.
      between **60%–130%** of guide area (users naturally overfill the
      guide slightly).
 9. **Stability tracking** (pure code, no OpenCV — unit tested):
-   sliding window of the last **8** processed frames (`stabilityWindow`).
+   sliding window of the last **6** processed frames (`stabilityWindow`).
    A frame is *stable* if it was accepted AND its maximum corner
-   displacement vs. the previous accepted frame is < **2%** of the frame
-   diagonal (`maxCornerDriftFrac`). Trigger condition: ≥ **6 of 8** frames
-   stable (`minStableFrames`).
+   displacement vs. the previous accepted frame is < **3.5%** of the frame
+   diagonal (`maxCornerDriftFrac` — handheld cards always tremor a few
+   px). Trigger condition: ≥ **4 of 6** frames stable (`minStableFrames`),
+   ~0.5 s of a normal hold at 10 fps.
 10. **Sharpness**: `Laplacian(CV_64F)` on the quad's bounding-box crop of
-    the 480-px grayscale; score = variance. Sharp iff score ≥ **120**
-    (`minSharpness`). Keep a ring buffer of the last **5** accepted frames
-    (corners + sharpness + source reference).
+    the 480-px grayscale; score = variance. Sharp iff score ≥ **60**
+    (`minSharpness` — consumer cameras are soft, and the ring buffer
+    submits the sharpest frame anyway). Keep a ring buffer of the last
+    **5** accepted frames (corners + sharpness + source reference).
 11. **Auto-capture** fires when the stability trigger holds AND the best
     ring-buffer sharpness ≥ threshold.
     - Flutter: call `takePicture()` (full sensor resolution), re-run steps
@@ -90,11 +92,11 @@ is dropped (never queued) while a previous frame is still being processed.
 `tooBlurry` | `moveCloser` (area < 60% of guide) | `alignCard`
 (aspect/centroid failure) → `capturing` → `uploading` → `done` | `error`.
 
-**Assisted fallback** (`assistedFallbackMs = 4000`): if no quad has been
-accepted after 4 s, auto-capture switches to guide-region mode — when the
+**Assisted fallback** (`assistedFallbackMs = 3000`): if no quad has been
+accepted after 3 s, auto-capture switches to guide-region mode — when the
 guide crop is sharp (Laplacian ≥ `minSharpness`) AND motion-stable
-(mean abs frame diff ≤ `assistedMaxMeanDiff = 6`) for
-`assistedStableFrames = 6` consecutive frames, the guide rect is captured
+(mean abs frame diff ≤ `assistedMaxMeanDiff = 10`) for
+`assistedStableFrames = 4` consecutive frames, the guide rect is captured
 directly (no perspective warp). This keeps hands-over-edges scenarios
 automatic instead of falling through to the manual button.
 

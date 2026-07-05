@@ -81,15 +81,20 @@ class DetectionConfig {
     this.guideAreaMinFrac = 0.6,
     // 1.3: users naturally overfill the guide a little; 1.15 rejected that.
     this.guideAreaMaxFrac = 1.3,
-    this.stabilityWindow = 8,
-    this.minStableFrames = 6,
-    this.maxCornerDriftFrac = 0.02,
-    this.minSharpness = 120,
+    // Handheld reality: a card held in front of a camera always tremors a
+    // few px and acceptance flickers between direct/hull corners, so the
+    // trigger is 4-of-6 frames with 3.5% drift — ~0.5 s of a normal hold.
+    this.stabilityWindow = 6,
+    this.minStableFrames = 4,
+    this.maxCornerDriftFrac = 0.035,
+    // Cameras are soft; the frame buffer still submits the SHARPEST frame,
+    // and 60 comfortably rejects genuine motion blur.
+    this.minSharpness = 60,
     this.frameBufferSize = 5,
     this.manualFallbackMs = 10000,
-    this.assistedFallbackMs = 4000,
-    this.assistedStableFrames = 6,
-    this.assistedMaxMeanDiff = 6,
+    this.assistedFallbackMs = 3000,
+    this.assistedStableFrames = 4,
+    this.assistedMaxMeanDiff = 10,
     this.maxProcessingFps = 10,
   });
 }
