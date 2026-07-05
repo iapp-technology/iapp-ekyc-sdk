@@ -28,7 +28,10 @@ is dropped (never queued) while a previous frame is still being processed.
 5. **Dilate** with a 3×3 rect kernel, 1 iteration (closes small edge gaps).
 6. **Contours**: `findContours(RETR_EXTERNAL, CHAIN_APPROX_SIMPLE)`, sort by
    area descending, examine the top **5** (`maxContourCandidates`).
-7. **Quadrilateral test** per candidate: `approxPolyDP(ε = 0.02 × arcLength)`.
+7. **Quadrilateral test** per candidate: `approxPolyDP(ε = 0.02 × arcLength)`;
+   if that yields ≠4 points or a non-convex shape, retry on the contour's
+   **convex hull** (fingers holding a card break its outline into >4
+   vertices; the hull smooths those intrusions back into a quadrilateral).
    Accept iff ALL of:
    - exactly 4 points;
    - convex (`isContourConvex`);
@@ -45,7 +48,8 @@ is dropped (never queued) while a previous frame is still being processed.
      (ID-3 data page, 125 × 88 mm). Accept within **±0.25**
      (`aspectTolerance`).
    - Guide alignment: quad centroid inside the guide rect AND quad area
-     between **60%–115%** of guide area.
+     between **60%–130%** of guide area (users naturally overfill the
+     guide slightly).
 9. **Stability tracking** (pure code, no OpenCV — unit tested):
    sliding window of the last **8** processed frames (`stabilityWindow`).
    A frame is *stable* if it was accepted AND its maximum corner
@@ -85,6 +89,14 @@ is dropped (never queued) while a previous frame is still being processed.
 `searching` → `holdStill` (quad accepted, accumulating stability) →
 `tooBlurry` | `moveCloser` (area < 60% of guide) | `alignCard`
 (aspect/centroid failure) → `capturing` → `uploading` → `done` | `error`.
+
+**Assisted fallback** (`assistedFallbackMs = 4000`): if no quad has been
+accepted after 4 s, auto-capture switches to guide-region mode — when the
+guide crop is sharp (Laplacian ≥ `minSharpness`) AND motion-stable
+(mean abs frame diff ≤ `assistedMaxMeanDiff = 6`) for
+`assistedStableFrames = 6` consecutive frames, the guide rect is captured
+directly (no perspective warp). This keeps hands-over-edges scenarios
+automatic instead of falling through to the manual button.
 
 A **manual capture button** appears after **10 s** without auto-capture
 (`manualFallbackMs = 10000`).

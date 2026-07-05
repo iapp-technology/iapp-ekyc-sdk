@@ -62,6 +62,17 @@ export interface DetectionParams {
   targetFps: number;
   /** Guide rect width as a fraction of the processed frame width. */
   guideWidthFrac: number;
+  /**
+   * Assisted fallback: if no quad has been accepted after this many ms,
+   * auto-capture fires from the GUIDE REGION alone once it is sharp and
+   * stable — fingers over the card edge routinely break contour-based
+   * quad detection, and users should not need the manual button for that.
+   */
+  assistedFallbackMs: number;
+  /** Consecutive sharp+stable guide frames required in assisted mode. */
+  assistedStableFrames: number;
+  /** Max mean abs pixel diff (0-255) between guide crops to count stable. */
+  assistedMaxMeanDiff: number;
 }
 
 export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
@@ -79,7 +90,8 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   borderMarginPx: 8,
   aspectTolerance: 0.25,
   guideAreaMinFrac: 0.6,
-  guideAreaMaxFrac: 1.15,
+  // 1.3: users naturally overfill the guide a little; 1.15 rejected that.
+  guideAreaMaxFrac: 1.3,
   stabilityWindow: 8,
   minStableFrames: 6,
   maxCornerDriftFrac: 0.02,
@@ -88,6 +100,9 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   manualFallbackMs: 10_000,
   targetFps: 10,
   guideWidthFrac: 0.8,
+  assistedFallbackMs: 4_000,
+  assistedStableFrames: 6,
+  assistedMaxMeanDiff: 6,
 };
 
 export interface GuideRect {
@@ -237,20 +252,37 @@ export function detectQuad(
   let accepted: Quad | null = null;
   let reason: RejectReason = 'noQuad';
 
-  for (const { index } of candidates) {
-    const contour = contours.get(index);
-    // Step 7: polygon approximation with epsilon = 0.02 x arcLength.
-    const peri = cv.arcLength(contour, true);
+  // Step 7: polygon approximation with epsilon = 0.02 x arcLength.
+  // Returns 4 convex points or null.
+  const fourPointApprox = (shape: InstanceType<typeof cv.Mat>): Point[] | null => {
+    const peri = cv.arcLength(shape, true);
     const approx = new cv.Mat();
-    cv.approxPolyDP(contour, approx, params.approxEpsilonFrac * peri, true);
-
+    cv.approxPolyDP(shape, approx, params.approxEpsilonFrac * peri, true);
     try {
-      if (approx.rows !== 4) continue;
-      if (!cv.isContourConvex(approx)) continue;
-
+      if (approx.rows !== 4 || !cv.isContourConvex(approx)) return null;
       const pts: Point[] = [];
       const data = approx.data32S;
       for (let i = 0; i < 4; i++) pts.push({ x: data[i * 2], y: data[i * 2 + 1] });
+      return pts;
+    } finally {
+      approx.delete();
+    }
+  };
+
+  for (const { index } of candidates) {
+    const contour = contours.get(index);
+    let pts = fourPointApprox(contour);
+    if (!pts) {
+      // Fingers holding a card break its outline into >4 vertices; the
+      // convex hull smooths those intrusions back into a quadrilateral.
+      const hull = new cv.Mat();
+      cv.convexHull(contour, hull, false, true);
+      pts = fourPointApprox(hull);
+      hull.delete();
+    }
+
+    {
+      if (!pts) continue;
       const quad = orderCorners(pts);
 
       // Interior angles within [60, 120].
@@ -299,8 +331,6 @@ export function detectQuad(
 
       accepted = quad;
       break;
-    } finally {
-      approx.delete();
     }
   }
   contours.delete();

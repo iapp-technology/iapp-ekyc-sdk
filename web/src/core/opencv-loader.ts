@@ -75,6 +75,8 @@ export interface CV {
   isContourConvex(contour: CvMat): boolean;
   Laplacian(src: CvMat, dst: CvMat, ddepth: number): void;
   meanStdDev(src: CvMat, mean: CvMat, stddev: CvMat): void;
+  absdiff(src1: CvMat, src2: CvMat, dst: CvMat): void;
+  convexHull(points: CvMat, hull: CvMat, clockwise: boolean, returnPoints: boolean): void;
   getPerspectiveTransform(src: CvMat, dst: CvMat): CvMat;
   warpPerspective(src: CvMat, dst: CvMat, M: CvMat, dsize: CvSize): void;
   COLOR_RGBA2GRAY: number;

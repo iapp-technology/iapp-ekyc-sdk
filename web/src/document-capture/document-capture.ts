@@ -131,6 +131,9 @@ class CaptureSession {
   private lastQuadProcessed: Quad | null = null;
   private processedWidth = 0;
   private processedHeight = 0;
+  private captureStartMs = 0;
+  private assistedRun = 0;
+  private prevGuideCrop: CvMat | null = null;
 
   constructor(
     api: EkycApiClient,
@@ -189,6 +192,7 @@ class CaptureSession {
       });
 
       this.setState('searching');
+      this.captureStartMs = Date.now();
       // Manual fallback: show the button after 10 s without auto-capture.
       this.manualTimer = setTimeout(() => {
         if (!this.finished && this.overlay) this.overlay.manualButton.style.display = '';
@@ -236,6 +240,7 @@ class CaptureSession {
       try {
         tracker.push(detection.quad);
         if (detection.quad) {
+          this.resetAssisted();
           this.lastQuadProcessed = detection.quad;
           const bbox = quadBoundingBox(
             detection.quad,
@@ -257,16 +262,24 @@ class CaptureSession {
               : 'holdStill',
           );
         } else {
-          switch (detection.reason) {
-            case 'moveCloser':
-              this.setState('moveCloser');
-              break;
-            case 'alignCard':
-              this.setState('alignCard');
-              break;
-            default:
-              this.setState('searching');
+          const assisted =
+            Date.now() - this.captureStartMs >= this.params.assistedFallbackMs
+              ? this.assistedTick(cv, detection.gray, guide)
+              : 'inactive';
+          if (assisted === 'captured') return;
+          if (assisted === 'inactive') {
+            switch (detection.reason) {
+              case 'moveCloser':
+                this.setState('moveCloser');
+                break;
+              case 'alignCard':
+                this.setState('alignCard');
+                break;
+              default:
+                this.setState('searching');
+            }
           }
+          // 'active': assistedTick already set the holdStill/tooBlurry chip.
         }
         this.draw(guide, detection.quad);
       } finally {
@@ -276,6 +289,66 @@ class CaptureSession {
       this.fail(e);
     } finally {
       this.busy = false;
+    }
+  }
+
+  /**
+   * Assisted fallback (no quad accepted for assistedFallbackMs): fingers
+   * over the card edge routinely break contour-based quad detection, so
+   * once the GUIDE REGION itself is sharp and motion-stable for
+   * assistedStableFrames consecutive frames, capture the guide crop —
+   * same path as the manual button, but automatic.
+   * Returns 'captured' when capture fired, 'active' when accumulating
+   * (state chip already set), 'inactive' never (kept for call-site shape).
+   */
+  private assistedTick(cv: CV, gray: CvMat, guide: GuideRect): 'captured' | 'active' | 'inactive' {
+    const rect = new cv.Rect(
+      Math.max(0, Math.round(guide.x)),
+      Math.max(0, Math.round(guide.y)),
+      Math.min(Math.round(guide.width), this.processedWidth - Math.round(guide.x)),
+      Math.min(Math.round(guide.height), this.processedHeight - Math.round(guide.y)),
+    );
+    const view = gray.roi(rect);
+    const crop = view.clone();
+    view.delete();
+
+    let stable = false;
+    if (this.prevGuideCrop) {
+      const diff = new cv.Mat();
+      cv.absdiff(this.prevGuideCrop, crop, diff);
+      const mean = new cv.Mat();
+      const stddev = new cv.Mat();
+      cv.meanStdDev(diff, mean, stddev);
+      stable = mean.data64F[0] <= this.params.assistedMaxMeanDiff;
+      diff.delete();
+      mean.delete();
+      stddev.delete();
+      this.prevGuideCrop.delete();
+    }
+    this.prevGuideCrop = crop;
+
+    const sharpness = laplacianVariance(cv, gray, {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    });
+    const sharp = sharpness >= this.params.minSharpness;
+
+    this.assistedRun = stable && sharp ? this.assistedRun + 1 : 0;
+    if (this.assistedRun >= this.params.assistedStableFrames) {
+      void this.capture(null); // guide-crop capture, same as manual
+      return 'captured';
+    }
+    this.setState(sharp ? 'holdStill' : 'tooBlurry');
+    return 'active';
+  }
+
+  private resetAssisted(): void {
+    this.assistedRun = 0;
+    if (this.prevGuideCrop) {
+      this.prevGuideCrop.delete();
+      this.prevGuideCrop = null;
     }
   }
 
@@ -410,6 +483,7 @@ class CaptureSession {
       clearTimeout(this.manualTimer);
       this.manualTimer = null;
     }
+    this.resetAssisted();
   }
 
   /** Clean DOM/camera/timer teardown. Safe to call multiple times. */

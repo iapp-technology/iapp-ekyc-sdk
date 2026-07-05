@@ -33,6 +33,25 @@ function syntheticFrame(): ImageDataLike {
   return { data, width: WIDTH, height: HEIGHT };
 }
 
+/**
+ * Same card, but with a dark "finger" notch intruding over the bottom edge
+ * — this breaks approxPolyDP into >4 vertices; only the convex-hull retry
+ * recovers the quad (the real-world hands-holding-the-card case).
+ */
+function notchedFrame(): ImageDataLike {
+  const frame = syntheticFrame();
+  const notch = { x0: 200, y0: 240, x1: 260, y1: 290 };
+  for (let y = notch.y0; y < notch.y1; y++) {
+    for (let x = notch.x0; x < notch.x1; x++) {
+      const i = (y * WIDTH + x) * 4;
+      frame.data[i] = 30;
+      frame.data[i + 1] = 30;
+      frame.data[i + 2] = 30;
+    }
+  }
+  return frame;
+}
+
 function uniformFrame(value: number): ImageDataLike {
   const data = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
   for (let i = 0; i < data.length; i += 4) {
@@ -76,6 +95,28 @@ describe('OpenCV.js smoke (Node)', () => {
       for (let i = 0; i < 4; i++) {
         expect(Math.abs(quad[i].x - expected[i][0])).toBeLessThanOrEqual(5);
         expect(Math.abs(quad[i].y - expected[i][1])).toBeLessThanOrEqual(5);
+      }
+    } finally {
+      result.gray.delete();
+    }
+  });
+
+  it('recovers the quad via convex hull when a finger notch breaks the edge', () => {
+    const result = detectQuad(cv, notchedFrame(), ASPECT_ID1);
+    try {
+      expect(result.reason).toBeNull();
+      expect(result.quad).not.toBeNull();
+      const quad = result.quad!;
+      // Hull corners still land on the card's true corners.
+      const expected = [
+        [RECT.x0, RECT.y0],
+        [RECT.x1, RECT.y0],
+        [RECT.x1, RECT.y1],
+        [RECT.x0, RECT.y1],
+      ];
+      for (let i = 0; i < 4; i++) {
+        expect(Math.abs(quad[i].x - expected[i][0])).toBeLessThanOrEqual(6);
+        expect(Math.abs(quad[i].y - expected[i][1])).toBeLessThanOrEqual(6);
       }
     } finally {
       result.gray.delete();
