@@ -11,6 +11,7 @@ import { readThemeToken, type EkycTheme } from '../core/theme';
 import type { Translator } from '../core/i18n/i18n';
 import type { Quad } from '../vision/geometry';
 import type { GuideRect } from '../vision/quad-detector';
+import type { CardLayout } from './document-types';
 
 export type GuideTone = 'idle' | 'active' | 'locked' | 'warning' | 'error';
 
@@ -187,6 +188,92 @@ function pxToken(el: HTMLElement, name: keyof EkycTheme, fallback: number): numb
 }
 
 /**
+ * Draw the faint per-card schematic (photo box, text lines, flag, emblem,
+ * MRZ) inside the guide so the user aligns the document the right way up.
+ * Uses only theme tokens; `onPrimary` at low alpha reads on the scrim in
+ * both light and dark themes.
+ */
+function drawCardSchematic(
+  ctx: CanvasRenderingContext2D,
+  themeSource: HTMLElement,
+  guide: GuideRect,
+  layout: CardLayout,
+): void {
+  const ink = readThemeToken(themeSource, 'onPrimary');
+  const accent = readThemeToken(themeSource, 'primaryLight');
+  const px = (nx: number) => guide.x + nx * guide.width;
+  const py = (ny: number) => guide.y + ny * guide.height;
+  const pw = (nw: number) => nw * guide.width;
+  const ph = (nh: number) => nh * guide.height;
+  const unit = Math.min(guide.width, guide.height);
+
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  ctx.lineWidth = Math.max(1, unit * 0.006);
+
+  for (const h of layout.hints) {
+    const x = px(h.x);
+    const y = py(h.y);
+    const w = pw(h.w);
+    const hh = ph(h.h);
+    switch (h.kind) {
+      case 'photo': {
+        // Box + simple person glyph (head + shoulders).
+        ctx.strokeStyle = ink;
+        ctx.strokeRect(x, y, w, hh);
+        ctx.fillStyle = ink;
+        ctx.globalAlpha = 0.35;
+        const cx = x + w / 2;
+        const headR = w * 0.18;
+        ctx.beginPath();
+        ctx.arc(cx, y + hh * 0.4, headR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(cx, y + hh * 0.95, w * 0.34, Math.PI, 0);
+        ctx.fill();
+        ctx.globalAlpha = 0.5;
+        break;
+      }
+      case 'lines':
+      case 'mrz': {
+        const n = h.lines ?? 3;
+        ctx.fillStyle = h.kind === 'mrz' ? ink : accent;
+        const gap = hh / n;
+        const barH = Math.min(gap * 0.5, unit * 0.02);
+        for (let i = 0; i < n; i++) {
+          const by = y + i * gap + (gap - barH) / 2;
+          // MRZ bars run full width; data lines taper for realism.
+          const bw = h.kind === 'mrz' ? w : w * (i % 2 === 0 ? 1 : 0.7);
+          ctx.fillRect(x, by, bw, barH);
+        }
+        break;
+      }
+      case 'flag': {
+        // Three horizontal stripes (Thai-flag-ish proportions).
+        ctx.fillStyle = ink;
+        const bands = [0.25, 0.5, 0.25];
+        let by = y;
+        for (let i = 0; i < bands.length; i++) {
+          ctx.globalAlpha = i === 1 ? 0.5 : 0.3;
+          ctx.fillRect(x, by, w, hh * bands[i]);
+          by += hh * bands[i];
+        }
+        ctx.globalAlpha = 0.5;
+        break;
+      }
+      case 'emblem': {
+        ctx.strokeStyle = ink;
+        ctx.beginPath();
+        ctx.ellipse(x + w / 2, y + hh / 2, w / 2, hh / 2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        break;
+      }
+    }
+  }
+  ctx.restore();
+}
+
+/**
  * Draw the document overlay: scrim outside the guide, rounded guide frame,
  * and the detected quad highlight. All coordinates are in canvas pixels
  * (canvas is sized to the native video resolution).
@@ -197,6 +284,7 @@ export function drawDocumentOverlay(
   guide: GuideRect,
   quad: Quad | null,
   tone: GuideTone,
+  layout?: CardLayout,
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -214,6 +302,12 @@ export function drawDocumentOverlay(
   tracePathRoundedRect(ctx, guide.x, guide.y, guide.width, guide.height, radius);
   ctx.fill('evenodd');
   ctx.restore();
+
+  // Card-layout schematic hint — only while still searching (no quad yet),
+  // so the user knows which way up to hold this particular document.
+  if (layout && !quad) {
+    drawCardSchematic(ctx, themeSource, guide, layout);
+  }
 
   // Guide frame.
   ctx.save();

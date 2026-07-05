@@ -44,9 +44,10 @@ is dropped (never queued) while a previous frame is still being processed.
      BL = min(x−y).
    - Aspect ratio = mean(top edge, bottom edge) / mean(left edge, right
      edge). Target **1.586** for ID-1 cards (Thai national ID, driver
-     license, bank book — 85.60 × 53.98 mm) and **1.42** for passports
-     (ID-3 data page, 125 × 88 mm). Accept within **±0.25**
-     (`aspectTolerance`).
+     license, bank book — 85.60 × 53.98 mm) and **0.71** for passports
+     (88 × 125 mm data page held **portrait**, the natural reading
+     orientation — photo bottom-left, MRZ across the bottom). Accept
+     within **±0.25** (`aspectTolerance`).
    - Guide alignment: quad centroid inside the guide rect AND quad area
      between **60%–130%** of guide area (users naturally overfill the
      guide slightly).
@@ -71,7 +72,7 @@ is dropped (never queued) while a previous frame is still being processed.
     - Web: draw the current video frame at native resolution to a canvas.
 12. **Perspective correction**: scale corners to the captured resolution;
     `getPerspectiveTransform` → destination size at ~300 DPI:
-    **1011×637** (ID-1) or **1476×1039** (passport);
+    **1011×637** (ID-1, landscape) or **1039×1476** (passport, portrait);
     `warpPerspective(INTER_LINEAR)`; encode **JPEG quality 92**; assert
     result < 10 MB.
 13. **Submission**: multipart POST, field `file`, to the endpoint mapped
@@ -84,7 +85,7 @@ is dropped (never queued) while a previous frame is still being processed.
     | `thaiIdWithSignature` | `/v3/store/ekyc/thai-national-id-card-with-signature` | 1.586 |
     | `thaiDriverLicense` | `/v3/store/ekyc/thai-driver-license` | 1.586 |
     | `bookBank` | `/v3/store/ekyc/book-bank` | 1.586 |
-    | `passport` | `/v3/store/ekyc/passport` | 1.42 |
+    | `passport` | `/v3/store/ekyc/passport` | 0.71 (portrait) |
 
 ## UX state machine (strings localized via the i18n tables)
 
@@ -92,26 +93,20 @@ is dropped (never queued) while a previous frame is still being processed.
 `tooBlurry` | `moveCloser` (area < 60% of guide) | `alignCard`
 (aspect/centroid failure) → `capturing` → `uploading` → `done` | `error`.
 
-**Assisted fallback** (`assistedFallbackMs = 3000`): if no quad has been
-accepted after 3 s, auto-capture switches to guide-region mode — when the
-guide crop is sharp (Laplacian ≥ `minSharpness`) AND motion-stable
-(mean abs frame diff ≤ `assistedMaxMeanDiff = 10`) for
-`assistedStableFrames = 4` consecutive frames, the guide rect is captured
-directly (no perspective warp). This keeps hands-over-edges scenarios
-automatic instead of falling through to the manual button.
+**Auto-capture only fires on an accepted document quad** (step 8: right
+shape, size, centered in the guide, stable, sharp). There is deliberately
+NO heuristic "guide region looks busy / stable" fallback — a real room is
+full of rectangular furniture (cabinets, door frames, shelves) that trips
+any such heuristic and captures the wrong thing. The convex-hull retry
+(step 7) already keeps a hand-held card accepting on the main path.
 
-**Card-like gate** (mandatory for assisted mode): an empty desk, a hand,
-or a still face are all sharp and stable too, so assisted capture also
-requires a `cardLike` frame — a substantial (≥ `minGuideAreaFrac` of the
-guide) 4-point convex contour (direct or via convex hull) with a
-landscape aspect in `[cardLikeAspectMin, cardLikeAspectMax] = [1.25, 2.4]`,
-even if it was rejected for tight aspect / centroid / oversize. A face or
-head never yields a large landscape rectangle, so it can never
-auto-capture. If no `cardLike` frame is seen, assisted mode never fires
-and the manual button (10 s) is the fallback.
+The detector still reports `cardLike` (a substantial ≥ `minGuideAreaFrac`
+landscape 4-point convex contour, aspect in
+`[cardLikeAspectMin, cardLikeAspectMax] = [1.25, 2.4]`) for UX hints, but
+it never drives capture.
 
-A **manual capture button** appears after **10 s** without auto-capture
-(`manualFallbackMs = 10000`).
+A **manual capture button** appears after **4 s** without auto-capture
+(`manualFallbackMs = 4000`) — the fallback when the quad will not lock.
 
 ## Shared test vectors
 

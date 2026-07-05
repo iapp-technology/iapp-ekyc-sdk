@@ -63,17 +63,6 @@ export interface DetectionParams {
   /** Guide rect width as a fraction of the processed frame width. */
   guideWidthFrac: number;
   /**
-   * Assisted fallback: if no quad has been accepted after this many ms,
-   * auto-capture fires from the GUIDE REGION alone once it is sharp and
-   * stable — fingers over the card edge routinely break contour-based
-   * quad detection, and users should not need the manual button for that.
-   */
-  assistedFallbackMs: number;
-  /** Consecutive sharp+stable guide frames required in assisted mode. */
-  assistedStableFrames: number;
-  /** Max mean abs pixel diff (0-255) between guide crops to count stable. */
-  assistedMaxMeanDiff: number;
-  /**
    * Aspect window for the `cardLike` signal — a landscape rectangle. Wide
    * enough for ID-1 (1.586) and passport (1.42) with slack, tight enough
    * to exclude a near-square/portrait face outline.
@@ -109,12 +98,11 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   // and 60 comfortably rejects genuine motion blur.
   minSharpness: 60,
   ringBufferSize: 5,
-  manualFallbackMs: 10_000,
+  // Auto-capture only fires on an aligned document quad; surface the manual
+  // button quickly so a user is never stuck if the quad won't lock.
+  manualFallbackMs: 4_000,
   targetFps: 10,
   guideWidthFrac: 0.8,
-  assistedFallbackMs: 3_000,
-  assistedStableFrames: 4,
-  assistedMaxMeanDiff: 10,
   cardLikeAspectMin: 1.25,
   cardLikeAspectMax: 2.4,
 };

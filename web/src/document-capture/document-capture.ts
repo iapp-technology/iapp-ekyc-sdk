@@ -131,9 +131,6 @@ class CaptureSession {
   private lastQuadProcessed: Quad | null = null;
   private processedWidth = 0;
   private processedHeight = 0;
-  private captureStartMs = 0;
-  private assistedRun = 0;
-  private prevGuideCrop: CvMat | null = null;
 
   constructor(
     api: EkycApiClient,
@@ -192,8 +189,9 @@ class CaptureSession {
       });
 
       this.setState('searching');
-      this.captureStartMs = Date.now();
-      // Manual fallback: show the button after 10 s without auto-capture.
+      // Manual fallback button appears early — auto-capture only fires on a
+      // properly aligned document quad, so give the user a quick manual
+      // escape hatch if the quad does not lock.
       this.manualTimer = setTimeout(() => {
         if (!this.finished && this.overlay) this.overlay.manualButton.style.display = '';
       }, this.params.manualFallbackMs);
@@ -240,7 +238,11 @@ class CaptureSession {
       try {
         tracker.push(detection.quad);
         if (detection.quad) {
-          this.resetAssisted();
+          // Auto-capture fires ONLY on a properly accepted document quad —
+          // right shape, size, centered, stable and sharp. No heuristic
+          // "guide looks busy" fallback: a real room is full of
+          // rectangular furniture that would trip it. The manual button
+          // (shown early) is the fallback when the quad never locks.
           this.lastQuadProcessed = detection.quad;
           const bbox = quadBoundingBox(
             detection.quad,
@@ -262,24 +264,16 @@ class CaptureSession {
               : 'holdStill',
           );
         } else {
-          const assisted =
-            Date.now() - this.captureStartMs >= this.params.assistedFallbackMs
-              ? this.assistedTick(cv, detection.gray, guide, detection.cardLike)
-              : 'inactive';
-          if (assisted === 'captured') return;
-          if (assisted === 'inactive') {
-            switch (detection.reason) {
-              case 'moveCloser':
-                this.setState('moveCloser');
-                break;
-              case 'alignCard':
-                this.setState('alignCard');
-                break;
-              default:
-                this.setState('searching');
-            }
+          switch (detection.reason) {
+            case 'moveCloser':
+              this.setState('moveCloser');
+              break;
+            case 'alignCard':
+              this.setState('alignCard');
+              break;
+            default:
+              this.setState('searching');
           }
-          // 'active': assistedTick already set the holdStill/tooBlurry chip.
         }
         this.draw(guide, detection.quad);
       } finally {
@@ -289,87 +283,6 @@ class CaptureSession {
       this.fail(e);
     } finally {
       this.busy = false;
-    }
-  }
-
-  /**
-   * Assisted fallback (no quad accepted for assistedFallbackMs): fingers
-   * over the card edge routinely break contour-based quad detection, so
-   * once the GUIDE REGION itself is sharp and motion-stable for
-   * assistedStableFrames consecutive frames, capture the guide crop —
-   * same path as the manual button, but automatic.
-   * Returns 'captured' when capture fired, 'active' when accumulating
-   * (state chip already set), 'inactive' never (kept for call-site shape).
-   */
-  private guideMeanDiff(cv: CV, a: CvMat, b: CvMat): number {
-    const diff = new cv.Mat();
-    cv.absdiff(a, b, diff);
-    const mean = new cv.Mat();
-    const stddev = new cv.Mat();
-    cv.meanStdDev(diff, mean, stddev);
-    const value = mean.data64F[0];
-    diff.delete();
-    mean.delete();
-    stddev.delete();
-    return value;
-  }
-
-  private cloneGuideCrop(cv: CV, gray: CvMat, guide: GuideRect): CvMat {
-    const rect = new cv.Rect(
-      Math.max(0, Math.round(guide.x)),
-      Math.max(0, Math.round(guide.y)),
-      Math.min(Math.round(guide.width), this.processedWidth - Math.round(guide.x)),
-      Math.min(Math.round(guide.height), this.processedHeight - Math.round(guide.y)),
-    );
-    const view = gray.roi(rect);
-    const crop = view.clone();
-    view.delete();
-    return crop;
-  }
-
-  private assistedTick(
-    cv: CV,
-    gray: CvMat,
-    guide: GuideRect,
-    cardLike: boolean,
-  ): 'captured' | 'active' | 'inactive' {
-    const crop = this.cloneGuideCrop(cv, gray, guide);
-
-    let stable = false;
-    if (this.prevGuideCrop) {
-      stable = this.guideMeanDiff(cv, this.prevGuideCrop, crop) <= this.params.assistedMaxMeanDiff;
-      this.prevGuideCrop.delete();
-    }
-    this.prevGuideCrop = crop;
-
-    // Card-like gate: a real rectangular document must be in view. A face,
-    // hand, or empty scene is never cardLike, so it can never auto-capture
-    // no matter how sharp and still it is.
-    if (!cardLike) {
-      this.assistedRun = 0;
-      this.setState('searching');
-      return 'active';
-    }
-
-    // `prevGuideCrop` now owns the current crop; it IS the guide region,
-    // so sharpness needs no bounds.
-    const sharpness = laplacianVariance(cv, this.prevGuideCrop!);
-    const sharp = sharpness >= this.params.minSharpness;
-
-    this.assistedRun = stable && sharp ? this.assistedRun + 1 : 0;
-    if (this.assistedRun >= this.params.assistedStableFrames) {
-      void this.capture(null); // guide-crop capture, same as manual
-      return 'captured';
-    }
-    this.setState(sharp ? 'holdStill' : 'tooBlurry');
-    return 'active';
-  }
-
-  private resetAssisted(): void {
-    this.assistedRun = 0;
-    if (this.prevGuideCrop) {
-      this.prevGuideCrop.delete();
-      this.prevGuideCrop = null;
     }
   }
 
@@ -387,7 +300,14 @@ class CaptureSession {
     const quad = quadProcessed
       ? (quadProcessed.map((p) => ({ x: p.x * scaleUp, y: p.y * scaleUp })) as Quad)
       : null;
-    drawDocumentOverlay(overlay.canvas, this.options.mount, guide, quad, STATE_TONE[this.state]);
+    drawDocumentOverlay(
+      overlay.canvas,
+      this.options.mount,
+      guide,
+      quad,
+      STATE_TONE[this.state],
+      DOCUMENT_SPECS[this.options.documentType].layout,
+    );
     overlay.progressBar.style.width = `${Math.round((this.tracker?.progress ?? 0) * 100)}%`;
   }
 
@@ -504,7 +424,6 @@ class CaptureSession {
       clearTimeout(this.manualTimer);
       this.manualTimer = null;
     }
-    this.resetAssisted();
   }
 
   /** Clean DOM/camera/timer teardown. Safe to call multiple times. */
