@@ -292,6 +292,31 @@ function drawCardSchematic(
         ctx.stroke();
         break;
       }
+      case 'chip': {
+        // Faded golden contact chip (Thai ID back): rounded square with a
+        // horizontal contact groove. `warning` token ≈ amber/gold.
+        const gold = readThemeToken(themeSource, 'warning');
+        ctx.save();
+        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = gold;
+        ctx.beginPath();
+        tracePathRoundedRect(ctx, x, y, w, hh, Math.min(w, hh) * 0.2);
+        ctx.fill();
+        ctx.globalAlpha = 0.6;
+        ctx.strokeStyle = gold;
+        ctx.lineWidth = Math.max(1.5, unit * 0.008);
+        ctx.beginPath();
+        tracePathRoundedRect(ctx, x, y, w, hh, Math.min(w, hh) * 0.2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x, y + hh / 2);
+        ctx.lineTo(x + w, y + hh / 2);
+        ctx.moveTo(x + w / 2, y);
+        ctx.lineTo(x + w / 2, y + hh / 2);
+        ctx.stroke();
+        ctx.restore();
+        break;
+      }
     }
   }
   ctx.restore();

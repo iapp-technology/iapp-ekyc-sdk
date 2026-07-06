@@ -17,7 +17,7 @@ export type DocumentType =
  * guide rect.
  */
 export interface CardHint {
-  kind: 'photo' | 'lines' | 'flag' | 'emblem' | 'mrz';
+  kind: 'photo' | 'lines' | 'flag' | 'emblem' | 'mrz' | 'chip';
   x: number;
   y: number;
   w: number;
@@ -65,12 +65,17 @@ const THAI_ID_FRONT_LAYOUT: CardLayout = {
   ],
 };
 
-/** Thai National ID (back): laser-engraved box top-left, small flag. */
+/**
+ * Thai National ID (back): laser code top-left, faded GOLDEN CHIP square
+ * left-center, Thai flag right-center, laser code lines lower middle.
+ * No photo on the back.
+ */
 const THAI_ID_BACK_LAYOUT: CardLayout = {
   hints: [
-    { kind: 'photo', x: 0.06, y: 0.12, w: 0.16, h: 0.34 },
-    { kind: 'flag', x: 0.55, y: 0.12, w: 0.12, h: 0.1 },
-    { kind: 'lines', x: 0.06, y: 0.62, w: 0.5, h: 0.12, lines: 2 },
+    { kind: 'lines', x: 0.06, y: 0.08, w: 0.42, h: 0.07, lines: 1 },
+    { kind: 'chip', x: 0.08, y: 0.36, w: 0.14, h: 0.22 },
+    { kind: 'flag', x: 0.76, y: 0.36, w: 0.14, h: 0.16 },
+    { kind: 'lines', x: 0.26, y: 0.68, w: 0.48, h: 0.16, lines: 2 },
   ],
 };
 
