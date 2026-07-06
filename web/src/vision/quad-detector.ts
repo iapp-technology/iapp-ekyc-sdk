@@ -77,15 +77,34 @@ function hasDocumentEdges(closedEdges: CvMat, quad: Quad, minSupport: number): b
  * Returns corners already ordered TL, TR, BR, BL, or null if any quadrant
  * is empty (not a quadrilateral-ish blob).
  */
-function extremeCornerQuad(contour: CvMat): Quad | null {
+function extremeCornerQuad(contour: CvMat, clip?: GuideRect): Quad | null {
   const data = contour.data32S;
-  const n = data.length / 2;
-  if (n < 4) return null;
+  const total = data.length / 2;
+  if (total < 4) return null;
+  // CLIP to the guide region (+margin): a document merged with the hand /
+  // arm holding it becomes one giant blob whose extreme corners land in
+  // the hand — but the part INSIDE the guide is just the document, so its
+  // extreme corners are the document's corners. Everything outside the
+  // clip box is ignored.
+  const pts: Point[] = [];
+  for (let i = 0; i < total; i++) {
+    const x = data[i * 2];
+    const y = data[i * 2 + 1];
+    if (
+      clip &&
+      (x < clip.x || x > clip.x + clip.width || y < clip.y || y > clip.y + clip.height)
+    ) {
+      continue;
+    }
+    pts.push({ x, y });
+  }
+  const n = pts.length;
+  if (n < 8) return null;
   let cx = 0;
   let cy = 0;
   for (let i = 0; i < n; i++) {
-    cx += data[i * 2];
-    cy += data[i * 2 + 1];
+    cx += pts[i].x;
+    cy += pts[i].y;
   }
   cx /= n;
   cy /= n;
@@ -99,8 +118,8 @@ function extremeCornerQuad(contour: CvMat): Quad | null {
   let dbr = -1;
   let dbl = -1;
   for (let i = 0; i < n; i++) {
-    const x = data[i * 2];
-    const y = data[i * 2 + 1];
+    const x = pts[i].x;
+    const y = pts[i].y;
     const dx = x - cx;
     const dy = y - cy;
     const d = dx * dx + dy * dy;
@@ -468,12 +487,35 @@ export function detectQuad(
   // candidate loop's edge-support check and is deleted after it.
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
-  cv.findContours(closed, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+  // CHAIN_APPROX_NONE: SIMPLE compresses straight edges to corner
+  // VERTICES only, which breaks pointwise clipping (a segment crossing
+  // the clip box can have both endpoints outside it). NONE keeps every
+  // boundary pixel.
+  cv.findContours(closed, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_NONE);
   hierarchy.delete();
 
+  // Rank candidates by BOUNDING-BOX area, NOT cv.contourArea: a contour
+  // that touches the image border (the arm holding the card always enters
+  // from the frame edge!) is traced as a thin out-and-back band whose
+  // SIGNED area cancels to ~0 — contourArea reported 3 for a card-spanning
+  // structure, and a size floor on it silently discarded the only real
+  // candidate. Bounding-box extent is immune to that.
   const indexed: Array<{ index: number; area: number }> = [];
   for (let i = 0; i < contours.size(); i++) {
-    indexed.push({ index: i, area: cv.contourArea(contours.get(i)) });
+    const d = contours.get(i).data32S;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let j = 0; j < d.length; j += 2) {
+      const x = d[j];
+      const y = d[j + 1];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    indexed.push({ index: i, area: Math.max(0, maxX - minX) * Math.max(0, maxY - minY) });
   }
   indexed.sort((a, b) => b.area - a.area);
 
@@ -490,9 +532,18 @@ export function detectQuad(
   const marginY = guideRect.height * params.guideCornerMarginFrac;
 
   const candidateFloor = Math.min(params.minGuideAreaFrac, params.cardLikeMinGuideAreaFrac);
+  // Contour points outside this box are ignored when extracting corners —
+  // the hand/arm holding the document merges into its contour, but only
+  // what is INSIDE the guide (+margin) defines the document's corners.
+  const clipRect: GuideRect = {
+    x: guideRect.x - marginX,
+    y: guideRect.y - marginY,
+    width: guideRect.width + 2 * marginX,
+    height: guideRect.height + 2 * marginY,
+  };
   for (const { index, area: contourArea } of indexed.slice(0, params.maxContourCandidates)) {
     if (contourArea < candidateFloor * guideArea) break; // sorted desc → rest smaller
-    const quad = extremeCornerQuad(contours.get(index));
+    const quad = extremeCornerQuad(contours.get(index), clipRect);
     if (!quad) continue;
 
     const area = quadArea(quad);

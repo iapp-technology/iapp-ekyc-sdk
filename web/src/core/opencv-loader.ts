@@ -89,6 +89,7 @@ export interface CV {
   RETR_EXTERNAL: number;
   RETR_LIST: number;
   CHAIN_APPROX_SIMPLE: number;
+  CHAIN_APPROX_NONE: number;
   CV_8UC1: number;
   CV_8UC4: number;
   CV_32FC2: number;

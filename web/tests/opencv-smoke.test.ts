@@ -212,6 +212,40 @@ describe('OpenCV.js smoke (Node)', () => {
     }
   });
 
+  it('card merged with the holding arm still yields the card (clip fix)', () => {
+    // A blank card whose contour merges with the hand/arm below it — the
+    // real-world Thai ID BACK case. Without clipping to the guide, the
+    // merged blob's extreme corners land in the arm and the candidate is
+    // rejected as oversize; with clipping, the card corners are recovered.
+    const data = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+    for (let y = 0; y < HEIGHT; y++) {
+      for (let x = 0; x < WIDTH; x++) {
+        const card = x >= RECT.x0 && x < RECT.x1 && y >= RECT.y0 && y < RECT.y1;
+        // "Arm": connected bright column from the card's bottom edge to the
+        // frame bottom.
+        const arm = x >= 200 && x < 290 && y >= RECT.y1 && y < HEIGHT;
+        const v = card || arm ? 230 : 30;
+        const i = (y * WIDTH + x) * 4;
+        data[i] = v;
+        data[i + 1] = v;
+        data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    }
+    const result = detectQuad(cv, { data, width: WIDTH, height: HEIGHT }, ASPECT_ID1);
+    try {
+      expect(result.cardLike).toBe(true);
+      expect(result.quad).not.toBeNull();
+      const quad = result.quad!;
+      // Top corners must still be the card's true top corners.
+      expect(Math.abs(quad[0].x - RECT.x0)).toBeLessThanOrEqual(6);
+      expect(Math.abs(quad[0].y - RECT.y0)).toBeLessThanOrEqual(6);
+      expect(Math.abs(quad[1].x - RECT.x1)).toBeLessThanOrEqual(6);
+    } finally {
+      result.gray.delete();
+    }
+  });
+
   it('finds no quad in a uniform frame', () => {
     const result = detectQuad(cv, uniformFrame(120), ASPECT_ID1);
     try {
