@@ -89,6 +89,6 @@ Apache License 2.0 — 版权所有 © 2026 iApp Technology Co., Ltd.
 
 ## 联系我们
 
-- 📚 文档:https://iapp.co.th/docs/ekyc
+- 📚 文档:https://iapp.co.th/docs/category/-electronic-know-your-customer-e-kyc
 - 💬 Discord:https://discord.gg/kYcpmdEcS2
 - ✉️ sale@iapp.co.th · ☎️ 086-322-5858

@@ -20,7 +20,7 @@ Get an API key: https://iapp.co.th/control/api-keys
 
 Responses are JSON objects whose fields vary per document type; the SDK
 exposes typed accessors plus the raw map (`result.raw`). See
-https://iapp.co.th/docs/ekyc for the full field reference.
+https://iapp.co.th/docs/category/-electronic-know-your-customer-e-kyc for the full field reference.
 
 ## Face APIs
 

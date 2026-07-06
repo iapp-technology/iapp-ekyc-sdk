@@ -111,6 +111,6 @@ See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Support
 
-- 📚 Docs: https://iapp.co.th/docs/ekyc
+- 📚 Docs: https://iapp.co.th/docs/category/-electronic-know-your-customer-e-kyc
 - 💬 Discord: https://discord.gg/kYcpmdEcS2
 - ✉️ sale@iapp.co.th · ☎️ 086-322-5858
