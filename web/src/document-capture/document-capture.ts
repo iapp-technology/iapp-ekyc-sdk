@@ -255,13 +255,18 @@ class CaptureSession {
         // cardLike gate: a card-sized rectangle must have been seen IN the
         // guide recently. Edge density alone is met by any busy scene (a
         // face, a room) — without this gate the flow snapped on the user's
-        // face and the OCR engine rejected it with HTTP 420.
+        // face and the OCR engine rejected it with HTTP 420. Detection
+        // flickers frame-to-frame, so one sighting in the last 8 frames is
+        // enough (a face NEVER produces a guide-centered card-ratio rect).
         this.cardLikeWindow.push(detection.cardLike);
-        if (this.cardLikeWindow.length > 4) this.cardLikeWindow.shift();
-        const cardSeen = this.cardLikeWindow.filter(Boolean).length >= 2;
+        if (this.cardLikeWindow.length > 8) this.cardLikeWindow.shift();
+        const cardSeen = this.cardLikeWindow.some(Boolean);
 
+        // LEAKY accumulator: a single wobbly frame pauses progress instead
+        // of erasing it — the old hard reset made the progress bar flicker
+        // to zero on any tiny hand movement.
         if (occupied && motionStable && sharp && cardSeen) this.easyRun += 1;
-        else this.easyRun = 0;
+        else this.easyRun = Math.max(0, this.easyRun - 1);
 
         // Keep the drawn quad + quality crop: EMA-smooth accepted corners,
         // reset the smoother on a rejected frame so re-acquisition is fresh.

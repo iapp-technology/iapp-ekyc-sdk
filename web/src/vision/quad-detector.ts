@@ -187,11 +187,14 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   cornerSmoothingAlpha: 0.45,
   cornerSmoothingResetPx: 60,
   // Easy occupancy snap: a text-filled card fills the guide with edges
-  // (density well above 0.03); an empty wall stays near 0. Motion <= 8
-  // mean-abs-diff is "held steady"; 4 such frames (~0.3 s) fires capture.
+  // (density well above 0.03); an empty wall stays near 0. Motion <= 14
+  // mean-abs-diff tolerates a normal handheld wobble (OCR handles slight
+  // motion; the freeze shows exactly what was sent); 3 such frames
+  // (~0.25 s) fires capture. easyRun decays by 1 on a failing frame
+  // instead of resetting (leaky accumulator, document-capture.ts).
   occupancyMinEdgeDensity: 0.03,
-  easyMotionMaxMeanDiff: 8,
-  easyStableFrames: 4,
+  easyMotionMaxMeanDiff: 14,
+  easyStableFrames: 3,
 };
 
 export interface GuideRect {
