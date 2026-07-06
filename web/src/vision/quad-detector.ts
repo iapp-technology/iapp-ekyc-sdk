@@ -23,7 +23,7 @@ import {
  * across the 4 sides. A real document boundary is a straight physical edge
  * supported on every side; a head/torso hull leaves its chords unsupported.
  */
-function minEdgeSupport(closedEdges: CvMat, quad: Quad): number {
+function minEdgeSupport(closedEdges: CvMat, quad: Quad): number[] {
   const { cols, rows } = closedEdges;
   const data = closedEdges.data;
   const SAMPLES = 24;
@@ -53,11 +53,22 @@ function minEdgeSupport(closedEdges: CvMat, quad: Quad): number {
     }
     supports.push(hit / SAMPLES);
   }
-  // Tolerate ONE weak side (glare-washed edge, finger over the border):
-  // return the SECOND-lowest support. A head/torso hull has at least two
-  // curved sides, so it still fails this bar.
   supports.sort((a, b) => a - b);
-  return supports[1];
+  return supports;
+}
+
+/**
+ * A quad "has document edges" when EITHER at most one side is weak
+ * (second-lowest support >= minSupport) OR at least two sides are STRONGLY
+ * supported (>= 0.5) — a held document routinely has fingers over one edge
+ * AND glare washing another, but always 2+ crisp physical edges. A
+ * head/torso hull almost never has even two straight supported chords.
+ */
+function hasDocumentEdges(closedEdges: CvMat, quad: Quad, minSupport: number): boolean {
+  const supports = minEdgeSupport(closedEdges, quad);
+  const secondLowest = supports[1];
+  const strongSides = supports.filter((s) => s >= 0.5).length;
+  return secondLowest >= minSupport || strongSides >= 2;
 }
 
 /**
@@ -497,7 +508,7 @@ export function detectQuad(
       area <= params.cardLikeMaxGuideAreaFrac * guideArea &&
       ratio >= params.cardLikeAspectMin &&
       ratio <= params.cardLikeAspectMax &&
-      minEdgeSupport(closed, quad) >= params.cardLikeEdgeSupportMin
+      hasDocumentEdges(closed, quad, params.cardLikeEdgeSupportMin)
     ) {
       cardLike = true;
     }
