@@ -42,8 +42,10 @@ const ANALYSIS_CROP_WIDTH = 160;
 
 const CHALLENGE_MESSAGE_KEY: Record<ChallengeType, string> = {
   blink: 'blink_now',
-  turnLeft: 'turn_left',
-  turnRight: 'turn_right',
+  // Arrow-enhanced variants: the preview is mirrored, so the user's left
+  // is screen-left and the arrows point the natural way.
+  turnLeft: 'turn_left_arrow',
+  turnRight: 'turn_right_arrow',
   smile: 'smile_now',
 };
 
@@ -301,6 +303,12 @@ class LivenessSession {
         challengeCount: snapshot.challengeCount,
       });
     }
+    const arrow =
+      snapshot.phase === 'challenge' && snapshot.currentChallenge === 'turnLeft'
+        ? ('left' as const)
+        : snapshot.phase === 'challenge' && snapshot.currentChallenge === 'turnRight'
+          ? ('right' as const)
+          : null;
     drawOvalOverlay(
       overlay.canvas,
       this.options.mount,
@@ -308,6 +316,7 @@ class LivenessSession {
       this.toneFor(snapshot),
       snapshot.challengeCount,
       snapshot.completedCount,
+      arrow,
     );
   }
 

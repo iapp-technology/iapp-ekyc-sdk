@@ -387,6 +387,8 @@ export function drawOvalOverlay(
   tone: GuideTone,
   challengeCount: number,
   challengesDone: number,
+  /** Turn-challenge direction hint: big chevrons beside the oval. */
+  arrow: 'left' | 'right' | null = null,
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -410,6 +412,31 @@ export function drawOvalOverlay(
   ctx.ellipse(oval.cx, oval.cy, oval.rx, oval.ry, 0, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
+
+  // Turn-direction HUD: three large chevrons beside the oval pointing the
+  // way the user must turn (preview is mirrored → user-left = screen-left).
+  if (arrow) {
+    const dir = arrow === 'left' ? -1 : 1;
+    const chevW = Math.max(14, oval.rx * 0.18);
+    const chevH = chevW * 1.6;
+    const baseX = oval.cx + dir * (oval.rx + chevW * 1.2);
+    const color = readThemeToken(themeSource, 'primary');
+    for (let i = 0; i < 3; i++) {
+      const x = baseX + dir * i * chevW * 1.1;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(5, stroke * 2);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.globalAlpha = 1 - i * 0.28; // leading chevron boldest
+      ctx.beginPath();
+      ctx.moveTo(x, oval.cy - chevH / 2);
+      ctx.lineTo(x + dir * chevW * 0.8, oval.cy);
+      ctx.lineTo(x, oval.cy + chevH / 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
 
   // Challenge progress dots.
   if (challengeCount > 0) {

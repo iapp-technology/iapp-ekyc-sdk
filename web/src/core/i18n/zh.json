@@ -46,5 +46,8 @@
   "error_insecure_context": "访问相机需要 HTTPS（或 localhost）。",
   "error_upload_failed": "上传失败，请您重试。",
   "error_challenge_timeout": "活体检测超时，请您重试。",
-  "error_too_many_restarts": "活体检测中断次数过多，请您重试。"
+  "error_too_many_restarts": "活体检测中断次数过多，请您重试。",
+  "no_document_found": "未检测到证件，请将证件对准框内后重试",
+  "turn_left_arrow": "◀ 请向左转头",
+  "turn_right_arrow": "请向右转头 ▶"
 }

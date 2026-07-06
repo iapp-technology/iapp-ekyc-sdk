@@ -8,7 +8,14 @@
  * (`DetectionParams`, mirrored by `DetectionConfig` in the Flutter SDK).
  */
 import type { CV, CvMat, ImageDataLike } from '../core/opencv-loader';
-import { aspectAccepted, aspectRatio, quadArea, type Point, type Quad } from './geometry';
+import {
+  aspectAccepted,
+  aspectRatio,
+  centroid,
+  quadArea,
+  type Point,
+  type Quad,
+} from './geometry';
 
 /**
  * Extract a document's 4 corners from a contour as the farthest point from
@@ -115,6 +122,8 @@ export interface DetectionParams {
    */
   cardLikeAspectMin: number;
   cardLikeAspectMax: number;
+  /** cardLike quads must also be <= this fraction of the guide area. */
+  cardLikeMaxGuideAreaFrac: number;
   /** EMA factor for corner smoothing (0..1; lower = steadier). */
   cornerSmoothingAlpha: number;
   /** Corner move beyond this many px snaps to raw (fast reposition). */
@@ -172,6 +181,7 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   guideWidthFrac: 0.8,
   cardLikeAspectMin: 1.25,
   cardLikeAspectMax: 2.4,
+  cardLikeMaxGuideAreaFrac: 1.5,
   // EMA smoothing: 0.45 damps jitter while still tracking real movement;
   // a >60px jump snaps to raw so fast repositions aren't laggy.
   cornerSmoothingAlpha: 0.45,
@@ -385,12 +395,22 @@ export function detectQuad(
 
     const area = quadArea(quad);
     const aspect = aspectRatio(quad);
-    // Orientation-agnostic card-like signal (UX hint only): a substantial
-    // rectangle whose long/short ratio is landscape-ish. A near-round face
-    // blob (ratio ~1) is excluded; a portrait passport (0.71 → 1.41) counts.
+    // Orientation-agnostic card-like signal — a REQUIRED gate for the easy
+    // snap (document-capture.ts): a card-sized rectangle IN THE GUIDE. The
+    // ratio window excludes near-round face blobs; the centroid + size
+    // bounds exclude background furniture (door frames, cabinets) that is
+    // rectangular but not where/how big the card must be.
     const ratio = aspect >= 1 ? aspect : 1 / aspect;
+    const qc = centroid(quad);
+    const centroidInGuideBox =
+      qc.x >= guideRect.x &&
+      qc.x <= guideRect.x + guideRect.width &&
+      qc.y >= guideRect.y &&
+      qc.y <= guideRect.y + guideRect.height;
     if (
+      centroidInGuideBox &&
       area >= params.minGuideAreaFrac * guideArea &&
+      area <= params.cardLikeMaxGuideAreaFrac * guideArea &&
       ratio >= params.cardLikeAspectMin &&
       ratio <= params.cardLikeAspectMax
     ) {

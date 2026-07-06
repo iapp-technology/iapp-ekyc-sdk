@@ -46,5 +46,8 @@
   "error_insecure_context": "Camera access requires HTTPS (or localhost).",
   "error_upload_failed": "Upload failed. Please try again.",
   "error_challenge_timeout": "The liveness challenge timed out. Please try again.",
-  "error_too_many_restarts": "The liveness check was interrupted too many times. Please try again."
+  "error_too_many_restarts": "The liveness check was interrupted too many times. Please try again.",
+  "no_document_found": "No document detected — position the card in the frame and try again",
+  "turn_left_arrow": "◀ Turn your head LEFT",
+  "turn_right_arrow": "Turn your head RIGHT ▶"
 }

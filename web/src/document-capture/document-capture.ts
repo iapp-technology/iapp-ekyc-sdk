@@ -41,6 +41,7 @@ export type CaptureState =
   | 'tooBlurry'
   | 'moveCloser'
   | 'alignCard'
+  | 'noDocument'
   | 'capturing'
   | 'uploading'
   | 'done'
@@ -54,6 +55,7 @@ const STATE_MESSAGE_KEY: Record<CaptureState, string> = {
   tooBlurry: 'too_blurry',
   moveCloser: 'move_closer',
   alignCard: 'align_card',
+  noDocument: 'no_document_found',
   capturing: 'capturing',
   uploading: 'uploading',
   done: 'done',
@@ -68,6 +70,7 @@ const STATE_TONE: Record<CaptureState, GuideTone> = {
   tooBlurry: 'warning',
   moveCloser: 'warning',
   alignCard: 'warning',
+  noDocument: 'warning',
   capturing: 'locked',
   uploading: 'locked',
   done: 'locked',
@@ -131,6 +134,10 @@ class CaptureSession {
   private smoothedQuad: Quad | null = null;
   /** Consecutive occupied + motion-stable + sharp frames (easy snap). */
   private easyRun = 0;
+  /** cardLike flags for the last 4 frames (snap needs >=2). */
+  private cardLikeWindow: boolean[] = [];
+  /** Auto-snaps rejected by the engine with HTTP 420 (no document). */
+  private noDocRetries = 0;
   /** Previous frame's gray guide crop, for the motion-stability check. */
   private prevGuideCrop: CvMat | null = null;
 
@@ -245,7 +252,15 @@ class CaptureSession {
         const motionStable = this.isMotionStable(cv, guideCrop);
         const occupied = detection.guideEdgeDensity >= this.params.occupancyMinEdgeDensity;
 
-        if (occupied && motionStable && sharp) this.easyRun += 1;
+        // cardLike gate: a card-sized rectangle must have been seen IN the
+        // guide recently. Edge density alone is met by any busy scene (a
+        // face, a room) — without this gate the flow snapped on the user's
+        // face and the OCR engine rejected it with HTTP 420.
+        this.cardLikeWindow.push(detection.cardLike);
+        if (this.cardLikeWindow.length > 4) this.cardLikeWindow.shift();
+        const cardSeen = this.cardLikeWindow.filter(Boolean).length >= 2;
+
+        if (occupied && motionStable && sharp && cardSeen) this.easyRun += 1;
         else this.easyRun = 0;
 
         // Keep the drawn quad + quality crop: EMA-smooth accepted corners,
@@ -257,11 +272,13 @@ class CaptureSession {
         if (this.easyRun >= this.params.easyStableFrames) {
           // Capture with the accepted quad (perspective-corrected) if one is
           // present THIS frame, otherwise the guide-region crop.
-          void this.capture(smoothed);
+          void this.capture(smoothed, { auto: true });
           return;
         }
 
-        this.setState(!occupied ? 'searching' : !sharp ? 'tooBlurry' : 'holdStill');
+        this.setState(
+          !occupied || !cardSeen ? 'searching' : !sharp ? 'tooBlurry' : 'holdStill',
+        );
         this.draw(guide, smoothed);
       } finally {
         detection.gray.delete();
@@ -348,7 +365,10 @@ class CaptureSession {
    * Capture + upload. `quadProcessed` null (manual capture with no quad
    * ever seen) falls back to cropping the guide region.
    */
-  private async capture(quadProcessed: Quad | null): Promise<void> {
+  private async capture(
+    quadProcessed: Quad | null,
+    opts: { auto?: boolean } = {},
+  ): Promise<void> {
     if (this.finished) return;
     const overlay = this.overlay;
     const cv = this.cv;
@@ -431,8 +451,39 @@ class CaptureSession {
       this.finish();
       this.resolve(result);
     } catch (e) {
+      // HTTP 420 = the OCR engine found no document in the image. For an
+      // AUTO snap that means our local gates fired on a non-document scene
+      // — resume scanning instead of failing the whole session. 4xx
+      // responses are never billed, so the retry costs nothing.
+      if (
+        opts.auto &&
+        e instanceof EkycError &&
+        e.statusCode === 420 &&
+        this.noDocRetries < 2 &&
+        !this.finished
+      ) {
+        this.noDocRetries += 1;
+        this.resumeAfterNoDocument();
+        return;
+      }
       this.fail(e);
     }
+  }
+
+  /** Hide the freeze, reset the snap gates and restart the scan loop. */
+  private resumeAfterNoDocument(): void {
+    const overlay = this.overlay;
+    if (!overlay) return;
+    overlay.freeze.style.display = 'none';
+    this.easyRun = 0;
+    this.cardLikeWindow = [];
+    this.smoothedQuad = null;
+    this.setState('noDocument');
+    // Brief pause so the user reads the message, then scan again.
+    setTimeout(() => {
+      if (this.finished || this.loopTimer !== null) return;
+      this.loopTimer = setInterval(() => this.tick(), 1000 / this.params.targetFps);
+    }, 1200);
   }
 
   /**
