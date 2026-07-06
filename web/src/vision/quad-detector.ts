@@ -27,7 +27,7 @@ function minEdgeSupport(closedEdges: CvMat, quad: Quad): number {
   const { cols, rows } = closedEdges;
   const data = closedEdges.data;
   const SAMPLES = 24;
-  let minSupport = 1;
+  const supports: number[] = [];
   for (let s = 0; s < 4; s++) {
     const a = quad[s];
     const b = quad[(s + 1) % 4];
@@ -51,9 +51,13 @@ function minEdgeSupport(closedEdges: CvMat, quad: Quad): number {
       }
       if (found) hit += 1;
     }
-    minSupport = Math.min(minSupport, hit / SAMPLES);
+    supports.push(hit / SAMPLES);
   }
-  return minSupport;
+  // Tolerate ONE weak side (glare-washed edge, finger over the border):
+  // return the SECOND-lowest support. A head/torso hull has at least two
+  // curved sides, so it still fails this bar.
+  supports.sort((a, b) => a - b);
+  return supports[1];
 }
 
 /**
@@ -196,6 +200,12 @@ export interface DetectionParams {
    * before firing (~0.3 s at the default frame rate).
    */
   easyStableFrames: number;
+  /**
+   * Long-hold guarantee: occupied+stable+sharp for this many frames snaps
+   * even without the card-shape gate (~3 s at 12 fps) — the engine's 420
+   * resume makes a wrong snap cost nothing.
+   */
+  longHoldSnapFrames: number;
 }
 
 export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
@@ -248,6 +258,7 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   occupancyMinEdgeDensity: 0.03,
   easyMotionMaxMeanDiff: 14,
   easyStableFrames: 3,
+  longHoldSnapFrames: 36,
 };
 
 export interface GuideRect {

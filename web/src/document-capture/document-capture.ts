@@ -136,6 +136,8 @@ class CaptureSession {
   private easyRun = 0;
   /** cardLike flags for the last 4 frames (snap needs >=2). */
   private cardLikeWindow: boolean[] = [];
+  /** Occupied+stable+sharp frames regardless of card-shape (long hold). */
+  private gateFreeRun = 0;
   /** Auto-snaps rejected by the engine with HTTP 420 (no document). */
   private noDocRetries = 0;
   /** Previous frame's gray guide crop, for the motion-stability check. */
@@ -268,22 +270,28 @@ class CaptureSession {
         if (occupied && motionStable && sharp && cardSeen) this.easyRun += 1;
         else this.easyRun = Math.max(0, this.easyRun - 1);
 
+        // Long-hold guarantee: if the guide is occupied, steady and sharp
+        // for ~3 s, snap even when the card-shape gate never fires (washed-
+        // out edges, unusual documents). A wrong snap costs nothing — the
+        // engine's 420 "no document" resumes scanning unbilled.
+        if (occupied && motionStable && sharp) this.gateFreeRun += 1;
+        else this.gateFreeRun = Math.max(0, this.gateFreeRun - 2);
+
         // Keep the drawn quad + quality crop: EMA-smooth accepted corners,
         // reset the smoother on a rejected frame so re-acquisition is fresh.
         const smoothed = detection.quad ? this.smoothQuad(detection.quad) : null;
         if (!detection.quad) this.smoothedQuad = null;
         if (smoothed) this.lastQuadProcessed = smoothed;
 
-        if (this.easyRun >= this.params.easyStableFrames) {
-          // Capture with the accepted quad (perspective-corrected) if one is
-          // present THIS frame, otherwise the guide-region crop.
+        if (
+          this.easyRun >= this.params.easyStableFrames ||
+          this.gateFreeRun >= this.params.longHoldSnapFrames
+        ) {
           void this.capture(smoothed, { auto: true });
           return;
         }
 
-        this.setState(
-          !occupied || !cardSeen ? 'searching' : !sharp ? 'tooBlurry' : 'holdStill',
-        );
+        this.setState(!occupied ? 'searching' : !sharp ? 'tooBlurry' : 'holdStill');
         this.draw(guide, smoothed);
       } finally {
         detection.gray.delete();
@@ -485,6 +493,7 @@ class CaptureSession {
     if (!overlay) return;
     overlay.freeze.style.display = 'none';
     this.easyRun = 0;
+    this.gateFreeRun = 0;
     this.cardLikeWindow = [];
     this.smoothedQuad = null;
     this.setState('noDocument');
