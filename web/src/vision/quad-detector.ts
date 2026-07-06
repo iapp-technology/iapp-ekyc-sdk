@@ -243,11 +243,14 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   manualFallbackMs: 4_000,
   targetFps: 12,
   guideWidthFrac: 0.8,
-  cardLikeAspectMin: 1.25,
+  // 1.15: a hand merged under the card skews the ratio down slightly.
+  cardLikeAspectMin: 1.15,
   cardLikeAspectMax: 2.4,
   cardLikeMaxGuideAreaFrac: 1.5,
   cardLikeMinGuideAreaFrac: 0.35,
-  cardLikeEdgeSupportMin: 0.45,
+  // 0.32: blank documents (Thai ID BACK) have faint boundaries; the
+  // face-guard holds because torso hulls score near zero on 2+ sides.
+  cardLikeEdgeSupportMin: 0.32,
   // EMA smoothing: 0.45 damps jitter while still tracking real movement;
   // a >60px jump snaps to raw so fast repositions aren't laggy.
   cornerSmoothingAlpha: 0.45,
@@ -258,10 +261,12 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   // motion; the freeze shows exactly what was sent); 3 such frames
   // (~0.25 s) fires capture. easyRun decays by 1 on a failing frame
   // instead of resetting (leaky accumulator, document-capture.ts).
-  occupancyMinEdgeDensity: 0.03,
+  // 0.015: the Thai ID BACK is nearly blank — far fewer edge pixels than
+  // a text-filled front — yet still well above an empty wall (<0.005).
+  occupancyMinEdgeDensity: 0.015,
   easyMotionMaxMeanDiff: 14,
   easyStableFrames: 3,
-  longHoldSnapFrames: 36,
+  longHoldSnapFrames: 30,
   longHoldCardMemoryFrames: 24,
 };
 
