@@ -1,14 +1,18 @@
 /**
  * Document auto-capture flow (docs/ALGORITHM.md).
  *
- * start() builds the camera UI inside `mount`, runs the 10 fps detection
- * loop (frames are DROPPED, never queued, while a previous frame is being
- * processed), auto-captures when the stability + sharpness triggers hold,
- * perspective-corrects, uploads, and resolves with the OCR result.
+ * start() builds the camera UI inside `mount`, runs the detection loop
+ * (frames are DROPPED, never queued, while a previous frame is being
+ * processed), and AUTO-CAPTURES using the easy occupancy snap: the guide
+ * being occupied by a detailed object (`guideEdgeDensity`) + motion-stable
+ * + sharp, held for ~0.3 s — NOT dependent on the fragile edge-contour quad
+ * being accepted (docs/ALGORITHM.md capture section). It then perspective-
+ * corrects (using the accepted quad if present, else the guide crop),
+ * uploads, and resolves with the OCR result.
  *
- * UX states: searching → holdStill → tooBlurry|moveCloser|alignCard →
- * capturing → uploading → done | error. A manual capture button appears
- * after 10 s without auto-capture.
+ * UX states: searching → holdStill (occupied + sharp, accumulating) →
+ * tooBlurry (occupied, soft) → capturing → uploading → done | error. A
+ * manual capture button appears after `manualFallbackMs` as a safety net.
  */
 import { EkycApiClient } from '../core/api-client';
 import { CameraController } from '../core/camera';
@@ -17,7 +21,7 @@ import { createTranslator, type Locale, type Translator } from '../core/i18n/i18
 import { applyTheme, type EkycTheme } from '../core/theme';
 import { loadOpenCv, type CV, type CvMat } from '../core/opencv-loader';
 import type { DocumentResult } from '../core/types';
-import { quadBoundingBox, laplacianVariance } from '../vision/blur-score';
+import { laplacianVariance } from '../vision/blur-score';
 import type { Quad } from '../vision/geometry';
 import { MAX_UPLOAD_BYTES, warpToJpegBlob, JPEG_QUALITY } from '../vision/perspective';
 import {
@@ -27,7 +31,6 @@ import {
   type DetectionParams,
   type GuideRect,
 } from '../vision/quad-detector';
-import { StabilityTracker } from '../vision/stability-tracker';
 import { DOCUMENT_SPECS, type DocumentType } from './document-types';
 import { buildOverlay, drawDocumentOverlay, type GuideTone, type OverlayElements } from './overlay';
 
@@ -88,11 +91,6 @@ export interface DocumentCaptureStartOptions {
   opencvScriptUrl?: string;
 }
 
-interface RingBufferEntry {
-  quad: Quad;
-  sharpness: number;
-}
-
 export class DocumentCapture {
   private readonly api: EkycApiClient;
 
@@ -122,8 +120,6 @@ class CaptureSession {
   private cv: CV | null = null;
   private loopTimer: ReturnType<typeof setInterval> | null = null;
   private manualTimer: ReturnType<typeof setTimeout> | null = null;
-  private tracker: StabilityTracker | null = null;
-  private ring: RingBufferEntry[] = [];
   private procCanvas: HTMLCanvasElement | null = null;
   private busy = false;
   private finished = false;
@@ -133,6 +129,10 @@ class CaptureSession {
   private processedHeight = 0;
   private freezeUrl: string | null = null;
   private smoothedQuad: Quad | null = null;
+  /** Consecutive occupied + motion-stable + sharp frames (easy snap). */
+  private easyRun = 0;
+  /** Previous frame's gray guide crop, for the motion-stability check. */
+  private prevGuideCrop: CvMat | null = null;
 
   constructor(
     api: EkycApiClient,
@@ -182,18 +182,10 @@ class CaptureSession {
       this.procCanvas.width = this.processedWidth;
       this.procCanvas.height = this.processedHeight;
 
-      this.tracker = new StabilityTracker({
-        frameWidth: this.processedWidth,
-        frameHeight: this.processedHeight,
-        windowSize: this.params.stabilityWindow,
-        minStableFrames: this.params.minStableFrames,
-        maxCornerDriftFrac: this.params.maxCornerDriftFrac,
-      });
-
       this.setState('searching');
-      // Manual fallback button appears early — auto-capture only fires on a
-      // properly aligned document quad, so give the user a quick manual
-      // escape hatch if the quad does not lock.
+      // Manual fallback button appears early as a safety net; with the easy
+      // occupancy snap auto-capture should fire within ~0.3 s of a held
+      // card, but this guarantees the user is never stuck.
       this.manualTimer = setTimeout(() => {
         if (!this.finished && this.overlay) this.overlay.manualButton.style.display = '';
       }, this.params.manualFallbackMs);
@@ -217,9 +209,8 @@ class CaptureSession {
     if (this.busy || this.finished) return;
     const overlay = this.overlay;
     const cv = this.cv;
-    const tracker = this.tracker;
     const procCanvas = this.procCanvas;
-    if (!overlay || !cv || !tracker || !procCanvas) return;
+    if (!overlay || !cv || !procCanvas) return;
     this.busy = true;
     try {
       const video = overlay.video;
@@ -238,48 +229,39 @@ class CaptureSession {
       );
       const detection = detectQuad(cv, imageData, spec.aspect, guide, this.params);
       try {
-        // Smooth the raw corners (EMA) so per-frame detection jitter does
-        // not spike the stability drift — this is what makes "hold still"
-        // actually reachable by hand — and steadies the drawn quad. On a
-        // rejected frame the smoother resets so re-acquisition is fresh.
+        // EASY OCCUPANCY SNAP (docs/ALGORITHM.md capture section). The snap
+        // no longer depends on the fragile edge-contour quad being accepted:
+        // it fires when the guide is OCCUPIED by a detailed object (high
+        // Canny-edge density — a text-filled card, never an empty wall), the
+        // frame is MOTION-STABLE (small guide-crop diff), and SHARP. The
+        // user is cooperatively presenting a card, so the guide crop already
+        // contains the whole card; an accepted quad, when present, only
+        // improves the crop (perspective-corrected).
+        const guideCrop = this.extractGuideCrop(cv, detection.gray, guide);
+        const sharp = laplacianVariance(cv, guideCrop) >= this.params.minSharpness;
+        // `isMotionStable` takes ownership of `guideCrop`, keeping it as the
+        // new prevGuideCrop for the next frame's diff (guideCrop stays valid
+        // above because ownership only transfers here).
+        const motionStable = this.isMotionStable(cv, guideCrop);
+        const occupied = detection.guideEdgeDensity >= this.params.occupancyMinEdgeDensity;
+
+        if (occupied && motionStable && sharp) this.easyRun += 1;
+        else this.easyRun = 0;
+
+        // Keep the drawn quad + quality crop: EMA-smooth accepted corners,
+        // reset the smoother on a rejected frame so re-acquisition is fresh.
         const smoothed = detection.quad ? this.smoothQuad(detection.quad) : null;
         if (!detection.quad) this.smoothedQuad = null;
+        if (smoothed) this.lastQuadProcessed = smoothed;
 
-        tracker.push(smoothed);
-        if (smoothed) {
-          // Auto-capture fires ONLY on a properly accepted document quad —
-          // right shape, size, centered, stable and sharp. No heuristic
-          // "guide looks busy" fallback: a real room is full of
-          // rectangular furniture that would trip it. The manual button
-          // (shown early) is the fallback when the quad never locks.
-          this.lastQuadProcessed = smoothed;
-          const bbox = quadBoundingBox(smoothed, detection.processedWidth, detection.processedHeight);
-          const sharpness = laplacianVariance(cv, detection.gray, bbox);
-          this.ring.push({ quad: smoothed, sharpness });
-          if (this.ring.length > this.params.ringBufferSize) this.ring.shift();
-
-          const bestSharpness = Math.max(...this.ring.map((r) => r.sharpness));
-          if (tracker.triggered && bestSharpness >= this.params.minSharpness) {
-            void this.capture(smoothed); // auto-capture (step 11)
-            return;
-          }
-          this.setState(
-            tracker.triggered && bestSharpness < this.params.minSharpness
-              ? 'tooBlurry'
-              : 'holdStill',
-          );
-        } else {
-          switch (detection.reason) {
-            case 'moveCloser':
-              this.setState('moveCloser');
-              break;
-            case 'alignCard':
-              this.setState('alignCard');
-              break;
-            default:
-              this.setState('searching');
-          }
+        if (this.easyRun >= this.params.easyStableFrames) {
+          // Capture with the accepted quad (perspective-corrected) if one is
+          // present THIS frame, otherwise the guide-region crop.
+          void this.capture(smoothed);
+          return;
         }
+
+        this.setState(!occupied ? 'searching' : !sharp ? 'tooBlurry' : 'holdStill');
         this.draw(guide, smoothed);
       } finally {
         detection.gray.delete();
@@ -289,6 +271,51 @@ class CaptureSession {
     } finally {
       this.busy = false;
     }
+  }
+
+  /**
+   * Clone the gray guide-region crop (processed coords) from `gray`. The
+   * clone is standalone (the caller's `gray` is deleted after the frame).
+   */
+  private extractGuideCrop(cv: CV, gray: CvMat, guide: GuideRect): CvMat {
+    const gx = Math.max(0, Math.min(gray.cols - 1, Math.floor(guide.x)));
+    const gy = Math.max(0, Math.min(gray.rows - 1, Math.floor(guide.y)));
+    const gw = Math.max(1, Math.min(gray.cols - gx, Math.round(guide.width)));
+    const gh = Math.max(1, Math.min(gray.rows - gy, Math.round(guide.height)));
+    const roi = gray.roi(new cv.Rect(gx, gy, gw, gh));
+    try {
+      return roi.clone();
+    } finally {
+      roi.delete();
+    }
+  }
+
+  /**
+   * Mean-abs-diff of `guideCrop` vs the previous frame's crop <=
+   * `easyMotionMaxMeanDiff`. TAKES OWNERSHIP of `guideCrop`: the old
+   * prevGuideCrop is deleted and `guideCrop` becomes the new one. The first
+   * frame (no previous crop, or a size change) is never motion-stable.
+   */
+  private isMotionStable(cv: CV, guideCrop: CvMat): boolean {
+    const prev = this.prevGuideCrop;
+    let stable = false;
+    if (prev && prev.rows === guideCrop.rows && prev.cols === guideCrop.cols) {
+      const diff = new cv.Mat();
+      const mean = new cv.Mat();
+      const stddev = new cv.Mat();
+      try {
+        cv.absdiff(guideCrop, prev, diff);
+        cv.meanStdDev(diff, mean, stddev);
+        stable = mean.data64F[0] <= this.params.easyMotionMaxMeanDiff;
+      } finally {
+        diff.delete();
+        mean.delete();
+        stddev.delete();
+      }
+    }
+    if (prev) prev.delete();
+    this.prevGuideCrop = guideCrop;
+    return stable;
   }
 
   /** Draw the overlay in native-video coordinates. */
@@ -313,7 +340,8 @@ class CaptureSession {
       STATE_TONE[this.state],
       DOCUMENT_SPECS[this.options.documentType].layout,
     );
-    overlay.progressBar.style.width = `${Math.round((this.tracker?.progress ?? 0) * 100)}%`;
+    const progress = Math.min(1, this.easyRun / Math.max(1, this.params.easyStableFrames));
+    overlay.progressBar.style.width = `${Math.round(progress * 100)}%`;
   }
 
   /**
@@ -489,9 +517,12 @@ class CaptureSession {
     this.camera = null;
     this.overlay?.destroy();
     this.overlay = null;
-    this.tracker = null;
-    this.ring = [];
     this.procCanvas = null;
+    this.easyRun = 0;
+    if (this.prevGuideCrop) {
+      this.prevGuideCrop.delete();
+      this.prevGuideCrop = null;
+    }
     this.cv = null;
     this.smoothedQuad = null;
     if (this.freezeUrl) {

@@ -24,6 +24,7 @@ import {
   ActiveLivenessFlow,
   type ActiveLivenessStartOptions,
 } from './active-liveness/active-liveness';
+import { FaceCapture, type FaceCaptureStartOptions } from './active-liveness/face-capture';
 import {
   DocumentCapture,
   type DocumentCaptureStartOptions,
@@ -66,6 +67,19 @@ export class IappEkyc {
   /** Run the interactive active-liveness flow. */
   startActiveLiveness(options: ActiveLivenessStartOptions): Promise<ActiveLivenessResult> {
     return new ActiveLivenessFlow(this.api).start({
+      locale: this.defaultLocale,
+      theme: this.defaultTheme,
+      ...options,
+    });
+  }
+
+  /**
+   * Auto-capture a frontal selfie from the camera (no liveness challenges).
+   * Resolves with the cropped selfie JPEG Blob — feed it straight to
+   * {@link verifyFaces} or {@link checkPassiveLiveness}.
+   */
+  captureFace(options: FaceCaptureStartOptions): Promise<Blob> {
+    return new FaceCapture().captureFace({
       locale: this.defaultLocale,
       theme: this.defaultTheme,
       ...options,

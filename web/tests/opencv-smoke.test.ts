@@ -169,6 +169,23 @@ describe('OpenCV.js smoke (Node)', () => {
     }
   });
 
+  it('reports guideEdgeDensity: card border edges score above a flat wall', () => {
+    const card = detectQuad(cv, syntheticFrame(), ASPECT_ID1);
+    const flat = detectQuad(cv, uniformFrame(120), ASPECT_ID1);
+    try {
+      // Density is a fraction in [0, 1].
+      expect(card.guideEdgeDensity).toBeGreaterThanOrEqual(0);
+      expect(card.guideEdgeDensity).toBeLessThanOrEqual(1);
+      // A flat wall has essentially no Canny edges inside the guide.
+      expect(flat.guideEdgeDensity).toBeLessThan(0.005);
+      // The card's edges give strictly more occupancy than the flat wall.
+      expect(card.guideEdgeDensity).toBeGreaterThan(flat.guideEdgeDensity);
+    } finally {
+      card.gray.delete();
+      flat.gray.delete();
+    }
+  });
+
   it('finds no quad in a uniform frame', () => {
     const result = detectQuad(cv, uniformFrame(120), ASPECT_ID1);
     try {

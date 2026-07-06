@@ -119,6 +119,24 @@ export interface DetectionParams {
   cornerSmoothingAlpha: number;
   /** Corner move beyond this many px snaps to raw (fast reposition). */
   cornerSmoothingResetPx: number;
+  /**
+   * "Easy" occupancy snap (web capture model). The guide is OCCUPIED by a
+   * detailed object when the fraction of Canny-edge pixels inside the guide
+   * rect (`guideEdgeDensity`) is >= this. A text-filled card gives a high
+   * density; an empty wall is ~0. This lets auto-capture fire without the
+   * fragile edge-contour quad being accepted.
+   */
+  occupancyMinEdgeDensity: number;
+  /**
+   * Easy snap: the mean absolute difference of the gray guide crop vs the
+   * previous frame's crop must be <= this to count as motion-stable.
+   */
+  easyMotionMaxMeanDiff: number;
+  /**
+   * Easy snap: consecutive occupied + motion-stable + sharp frames required
+   * before firing (~0.3 s at the default frame rate).
+   */
+  easyStableFrames: number;
 }
 
 export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
@@ -158,6 +176,12 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   // a >60px jump snaps to raw so fast repositions aren't laggy.
   cornerSmoothingAlpha: 0.45,
   cornerSmoothingResetPx: 60,
+  // Easy occupancy snap: a text-filled card fills the guide with edges
+  // (density well above 0.03); an empty wall stays near 0. Motion <= 8
+  // mean-abs-diff is "held steady"; 4 such frames (~0.3 s) fires capture.
+  occupancyMinEdgeDensity: 0.03,
+  easyMotionMaxMeanDiff: 8,
+  easyStableFrames: 4,
 };
 
 export interface GuideRect {
@@ -183,6 +207,13 @@ export interface QuadDetectionResult {
    * capture keys off it (not raw pixel motion).
    */
   cardLike: boolean;
+  /**
+   * Fraction (0..1) of Canny-edge pixels inside the guide rect this frame —
+   * the "guide is occupied by a detailed object" signal. A text-filled card
+   * scores high; an empty wall scores ~0. Drives the easy occupancy snap
+   * (document-capture) independently of quad acceptance.
+   */
+  guideEdgeDensity: number;
   /**
    * Processed grayscale mat (post-downscale, pre-blur) for sharpness
    * scoring. THE CALLER MUST CALL `.delete()` on it.
@@ -288,6 +319,28 @@ export function detectQuad(
   cv.Canny(blurred, edges, lower, upper);
   blurred.delete();
 
+  // Occupancy signal: fraction of Canny-edge pixels inside the guide rect
+  // (computed on `edges` BEFORE it is consumed/deleted). meanStdDev of a
+  // binary edge map is 255 * (edge fraction), so mean/255 = density.
+  let guideEdgeDensity = 0;
+  {
+    const gx = clamp(Math.floor(guideRect.x), 0, Math.max(0, width - 1));
+    const gy = clamp(Math.floor(guideRect.y), 0, Math.max(0, height - 1));
+    const gw = clamp(Math.round(guideRect.width), 1, width - gx);
+    const gh = clamp(Math.round(guideRect.height), 1, height - gy);
+    const roi = edges.roi(new cv.Rect(gx, gy, gw, gh));
+    const mean = new cv.Mat();
+    const stddev = new cv.Mat();
+    try {
+      cv.meanStdDev(roi, mean, stddev);
+      guideEdgeDensity = mean.data64F[0] / 255;
+    } finally {
+      roi.delete();
+      mean.delete();
+      stddev.delete();
+    }
+  }
+
   // Step 5: morphological CLOSE with a larger kernel to bridge gaps in the
   // card's edge (glare, low contrast, finger occlusion) so the border
   // survives as ONE closed contour — the key to robust detection.
@@ -384,6 +437,7 @@ export function detectQuad(
     quad: accepted,
     reason: accepted ? null : reason,
     cardLike: accepted !== null || cardLike,
+    guideEdgeDensity,
     gray,
     scaleBack,
     processedWidth: width,

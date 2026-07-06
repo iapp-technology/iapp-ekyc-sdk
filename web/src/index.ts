@@ -108,6 +108,11 @@ export {
   type FaceLandmarkerLike,
   type LoadFaceLandmarkerOptions,
 } from './active-liveness/mediapipe-loader';
+export {
+  FaceCapture,
+  type FaceCaptureState,
+  type FaceCaptureStartOptions,
+} from './active-liveness/face-capture';
 
 // Face APIs
 export { FaceApi } from './face-api/index';

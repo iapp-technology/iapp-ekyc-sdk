@@ -66,13 +66,27 @@ is dropped (never queued) while a previous frame is still being processed.
     (`minSharpness` — consumer cameras are soft, and the ring buffer
     submits the sharpest frame anyway). Keep a ring buffer of the last
     **5** accepted frames (corners + sharpness + source reference).
-11. **Auto-capture** fires when the stability trigger holds AND the best
-    ring-buffer sharpness ≥ threshold.
-    - Flutter: call `takePicture()` (full sensor resolution), re-run steps
-      1–8 on the still using the last stream quad (scaled) as a sanity
-      prior; if detection on the still fails, fall back to the best
-      buffered stream frame (NV21 → BGR via `COLOR_YUV2BGR_NV21`).
-    - Web: draw the current video frame at native resolution to a canvas.
+11. **Auto-capture.**
+    - **Web (occupancy + motion + sharp snap):** capture does NOT wait for
+      the fragile edge-contour quad to be accepted. Each frame the detector
+      reports `guideEdgeDensity` (fraction of Canny-edge pixels inside the
+      guide rect — a text-filled card scores high, an empty wall ≈ 0). The
+      snap fires after `easyStableFrames = 4` consecutive frames (~0.3 s)
+      that are all: **occupied** (`guideEdgeDensity ≥ occupancyMinEdgeDensity
+      = 0.03`), **motion-stable** (mean-abs-diff of the gray guide crop vs
+      the previous frame ≤ `easyMotionMaxMeanDiff = 8`), and **sharp**
+      (`Laplacian` variance of the guide crop ≥ `minSharpness`). If a quad
+      IS accepted on the firing frame it is used (smoothed, perspective-
+      corrected) for the best crop; otherwise the guide-region crop is used
+      — the user is cooperatively presenting a card, so the guide crop
+      already contains the whole card. Occupancy prevents empty-wall snaps.
+      The captured frame is the current video frame at native resolution.
+    - **Flutter:** fires when the step-9 stability trigger holds AND the best
+      ring-buffer sharpness ≥ threshold; call `takePicture()` (full sensor
+      resolution), re-run steps 1–8 on the still using the last stream quad
+      (scaled) as a sanity prior; if detection on the still fails, fall back
+      to the best buffered stream frame (NV21 → BGR via
+      `COLOR_YUV2BGR_NV21`).
 12. **Perspective correction**: scale corners to the captured resolution;
     `getPerspectiveTransform` → destination size at ~300 DPI:
     **1011×637** (ID-1, landscape) or **1039×1476** (passport, portrait);
@@ -92,24 +106,30 @@ is dropped (never queued) while a previous frame is still being processed.
 
 ## UX state machine (strings localized via the i18n tables)
 
-`searching` → `holdStill` (quad accepted, accumulating stability) →
-`tooBlurry` | `moveCloser` (area < 60% of guide) | `alignCard`
-(aspect/centroid failure) → `capturing` → `uploading` → `done` | `error`.
+`searching` → `holdStill` (guide occupied + sharp, accumulating hold) →
+`tooBlurry` (occupied but not sharp) → `capturing` → `uploading` → `done`
+| `error`.
 
-**Auto-capture only fires on an accepted document quad** (step 8: right
-shape, size, centered in the guide, stable, sharp). There is deliberately
-NO heuristic "guide region looks busy / stable" fallback — a real room is
-full of rectangular furniture (cabinets, door frames, shelves) that trips
-any such heuristic and captures the wrong thing. The convex-hull retry
-(step 7) already keeps a hand-held card accepting on the main path.
+**Web capture keys off occupancy, not quad acceptance** (step 11). The old
+rule — auto-capture only on an accepted document quad — was too fragile: a
+well-placed card whose edge contour never quite passed the aspect/centroid
+checks would never snap, frustrating users. The new snap model instead
+fires when the guide is *occupied by a detailed object* (high
+`guideEdgeDensity`), the frame is *motion-stable*, and it is *sharp*, held
+for ~0.3 s. Occupancy (a text-filled card vs an empty wall) is what
+prevents a still empty scene from snapping; the user is cooperatively
+presenting a card, so an occasional guide-region crop (when no quad is
+accepted that frame) still contains the whole card. The chip reflects the
+gates: `searching` when not occupied, `tooBlurry` when occupied but soft,
+`holdStill` while the run accumulates.
 
-The detector still reports `cardLike` (a substantial ≥ `minGuideAreaFrac`
-landscape 4-point convex contour, aspect in
-`[cardLikeAspectMin, cardLikeAspectMax] = [1.25, 2.4]`) for UX hints, but
-it never drives capture.
+The detector still runs full quad detection (steps 6–8) and reports
+`cardLike` for UX hints; an accepted quad, when present on the firing
+frame, is used for a perspective-corrected crop, but it is no longer a
+precondition for the snap.
 
 A **manual capture button** appears after **4 s** without auto-capture
-(`manualFallbackMs = 4000`) — the fallback when the quad will not lock.
+(`manualFallbackMs = 4000`) as a safety net.
 
 ## Shared test vectors
 
