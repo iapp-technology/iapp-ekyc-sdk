@@ -23,7 +23,7 @@ import { loadOpenCv, type CV, type CvMat } from '../core/opencv-loader';
 import type { DocumentResult } from '../core/types';
 import { laplacianVariance } from '../vision/blur-score';
 import type { Quad } from '../vision/geometry';
-import { MAX_UPLOAD_BYTES, warpToJpegBlob, JPEG_QUALITY } from '../vision/perspective';
+import { MAX_UPLOAD_BYTES, JPEG_QUALITY } from '../vision/perspective';
 import {
   computeGuideRect,
   DEFAULT_DETECTION_PARAMS,
@@ -392,22 +392,17 @@ class CaptureSession {
       if (!fctx) throw new EkycError('Could not create capture canvas');
       fctx.drawImage(video, 0, 0);
 
+      // NO perspective warp: warping between detected corners DISTORTS the
+      // image whenever the corners are even slightly off the card's true
+      // corners (hand, glare, smoothing lag) — users reported skewed
+      // captures. The user positions the card in the guide, so the plain
+      // guide-region crop is a clean undistorted photo, and the OCR engine
+      // handles natural perspective itself (0.98 detection on real tests).
+      // `quadProcessed` is intentionally unused here; the quad only serves
+      // detection gating and the on-screen overlay.
+      void quadProcessed;
       let blob: Blob;
-      if (quadProcessed) {
-        const scaleUp = video.videoWidth / this.processedWidth;
-        const corners = quadProcessed.map((p) => ({
-          x: p.x * scaleUp,
-          y: p.y * scaleUp,
-        })) as Quad;
-        const imageData = fctx.getImageData(0, 0, full.width, full.height);
-        const mat: CvMat = cv.matFromImageData(imageData);
-        try {
-          blob = await warpToJpegBlob(cv, mat, corners, spec.warpWidth, spec.warpHeight);
-        } finally {
-          mat.delete();
-        }
-      } else {
-        // Manual capture without any detected quad: crop the guide region.
+      {
         const scaleUp = video.videoWidth / this.processedWidth;
         const guide = computeGuideRect(
           this.processedWidth,
