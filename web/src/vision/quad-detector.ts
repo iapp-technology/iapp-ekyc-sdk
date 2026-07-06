@@ -18,6 +18,45 @@ import {
 } from './geometry';
 
 /**
+ * Fraction of sample points along each side of the quad that sit on (or
+ * within ~2 px of) an edge pixel in the closed edge map; returns the MINIMUM
+ * across the 4 sides. A real document boundary is a straight physical edge
+ * supported on every side; a head/torso hull leaves its chords unsupported.
+ */
+function minEdgeSupport(closedEdges: CvMat, quad: Quad): number {
+  const { cols, rows } = closedEdges;
+  const data = closedEdges.data;
+  const SAMPLES = 24;
+  let minSupport = 1;
+  for (let s = 0; s < 4; s++) {
+    const a = quad[s];
+    const b = quad[(s + 1) % 4];
+    let hit = 0;
+    for (let i = 0; i < SAMPLES; i++) {
+      const t = (i + 0.5) / SAMPLES;
+      const x = Math.round(a.x + (b.x - a.x) * t);
+      const y = Math.round(a.y + (b.y - a.y) * t);
+      let found = false;
+      for (let dy = -2; dy <= 2 && !found; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= rows) continue;
+        for (let dx = -2; dx <= 2; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= cols) continue;
+          if (data[yy * cols + xx] !== 0) {
+            found = true;
+            break;
+          }
+        }
+      }
+      if (found) hit += 1;
+    }
+    minSupport = Math.min(minSupport, hit / SAMPLES);
+  }
+  return minSupport;
+}
+
+/**
  * Extract a document's 4 corners from a contour as the farthest point from
  * the contour centroid within each quadrant (jscanify, MIT — see NOTICE).
  * Returns corners already ordered TL, TR, BR, BL, or null if any quadrant
@@ -124,6 +163,17 @@ export interface DetectionParams {
   cardLikeAspectMax: number;
   /** cardLike quads must also be <= this fraction of the guide area. */
   cardLikeMaxGuideAreaFrac: number;
+  /**
+   * cardLike size floor (fraction of guide area) — lower than the main
+   * acceptance floor so a passport DATA PAGE (~35% of the open-booklet
+   * guide) still counts as a card in view.
+   */
+  cardLikeMinGuideAreaFrac: number;
+  /**
+   * Min per-side Canny-edge support for a cardLike quad (0..1). Documents
+   * have straight supported boundaries; head/torso hulls do not.
+   */
+  cardLikeEdgeSupportMin: number;
   /** EMA factor for corner smoothing (0..1; lower = steadier). */
   cornerSmoothingAlpha: number;
   /** Corner move beyond this many px snaps to raw (fast reposition). */
@@ -182,6 +232,8 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   cardLikeAspectMin: 1.25,
   cardLikeAspectMax: 2.4,
   cardLikeMaxGuideAreaFrac: 1.5,
+  cardLikeMinGuideAreaFrac: 0.35,
+  cardLikeEdgeSupportMin: 0.45,
   // EMA smoothing: 0.45 damps jitter while still tracking real movement;
   // a >60px jump snaps to raw so fast repositions aren't laggy.
   cornerSmoothingAlpha: 0.45,
@@ -366,11 +418,11 @@ export function detectQuad(
   edges.delete();
   kernel.delete();
 
-  // Step 6: external contours, largest first.
+  // Step 6: external contours, largest first. `closed` stays alive for the
+  // candidate loop's edge-support check and is deleted after it.
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
   cv.findContours(closed, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-  closed.delete();
   hierarchy.delete();
 
   const indexed: Array<{ index: number; area: number }> = [];
@@ -391,18 +443,21 @@ export function detectQuad(
   const marginX = guideRect.width * params.guideCornerMarginFrac;
   const marginY = guideRect.height * params.guideCornerMarginFrac;
 
+  const candidateFloor = Math.min(params.minGuideAreaFrac, params.cardLikeMinGuideAreaFrac);
   for (const { index, area: contourArea } of indexed.slice(0, params.maxContourCandidates)) {
-    if (contourArea < params.minGuideAreaFrac * guideArea) break; // sorted desc → rest smaller
+    if (contourArea < candidateFloor * guideArea) break; // sorted desc → rest smaller
     const quad = extremeCornerQuad(contours.get(index));
     if (!quad) continue;
 
     const area = quadArea(quad);
     const aspect = aspectRatio(quad);
     // Orientation-agnostic card-like signal — a REQUIRED gate for the easy
-    // snap (document-capture.ts): a card-sized rectangle IN THE GUIDE. The
-    // ratio window excludes near-round face blobs; the centroid + size
-    // bounds exclude background furniture (door frames, cabinets) that is
-    // rectangular but not where/how big the card must be.
+    // snap (document-capture.ts): a card-sized rectangle IN THE GUIDE with
+    // REAL STRAIGHT EDGES. The ratio window excludes near-round blobs; the
+    // centroid + size bounds exclude background furniture; the edge-support
+    // check kills head/torso hulls — a portrait guide (passport) matches
+    // human torso geometry, but curved shoulders leave the quad's sides
+    // without Canny-edge support, while a document boundary supports all 4.
     const ratio = aspect >= 1 ? aspect : 1 / aspect;
     const qc = centroid(quad);
     const centroidInGuideBox =
@@ -411,11 +466,13 @@ export function detectQuad(
       qc.y >= guideRect.y &&
       qc.y <= guideRect.y + guideRect.height;
     if (
+      !cardLike &&
       centroidInGuideBox &&
-      area >= params.minGuideAreaFrac * guideArea &&
+      area >= params.cardLikeMinGuideAreaFrac * guideArea &&
       area <= params.cardLikeMaxGuideAreaFrac * guideArea &&
       ratio >= params.cardLikeAspectMin &&
-      ratio <= params.cardLikeAspectMax
+      ratio <= params.cardLikeAspectMax &&
+      minEdgeSupport(closed, quad) >= params.cardLikeEdgeSupportMin
     ) {
       cardLike = true;
     }
@@ -455,6 +512,7 @@ export function detectQuad(
     break;
   }
   contours.delete();
+  closed.delete();
 
   return {
     quad: accepted,

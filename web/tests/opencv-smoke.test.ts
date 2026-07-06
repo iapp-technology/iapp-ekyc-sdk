@@ -186,6 +186,32 @@ describe('OpenCV.js smoke (Node)', () => {
     }
   });
 
+  it('passport data page (landscape, ~37% of portrait guide) is cardLike', () => {
+    // Portrait passport guide on a 480x360 frame is 204x288 centered
+    // (computeGuideRect caps height at 0.8*H). The DATA PAGE alone — a
+    // landscape rect in the lower half of the open booklet — must count
+    // as a card in view even though it is well under half the guide.
+    const data = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+    const page = { x0: 152, y0: 190, x1: 328, y1: 314 }; // 176x124, ratio 1.42
+    for (let y = 0; y < HEIGHT; y++) {
+      for (let x = 0; x < WIDTH; x++) {
+        const inside = x >= page.x0 && x < page.x1 && y >= page.y0 && y < page.y1;
+        const v = inside ? 235 : 40;
+        const i = (y * WIDTH + x) * 4;
+        data[i] = v;
+        data[i + 1] = v;
+        data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    }
+    const result = detectQuad(cv, { data, width: WIDTH, height: HEIGHT }, 0.71);
+    try {
+      expect(result.cardLike).toBe(true);
+    } finally {
+      result.gray.delete();
+    }
+  });
+
   it('finds no quad in a uniform frame', () => {
     const result = detectQuad(cv, uniformFrame(120), ASPECT_ID1);
     try {
