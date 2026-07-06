@@ -96,16 +96,18 @@ const BOOK_BANK_LAYOUT: CardLayout = {
 };
 
 /**
- * Passport data page — PORTRAIT (88 x 125 mm ≈ 0.71). Personal-data lines
- * on the right, photo bottom-left, two-line MRZ across the very bottom.
+ * Passport DATA PAGE only, held LANDSCAPE (125 x 88 mm = 1.42) — the page
+ * with the photo carries all the information, and framing just that page
+ * yields a larger, clearer image than the full open booklet. Header line
+ * top, photo left, data lines right, two-line MRZ across the bottom.
  */
-const PASSPORT = { aspect: 0.71, warpWidth: 1039, warpHeight: 1476 } as const;
+const PASSPORT = { aspect: 1.42, warpWidth: 1476, warpHeight: 1039 } as const;
 const PASSPORT_LAYOUT: CardLayout = {
   hints: [
-    { kind: 'lines', x: 0.08, y: 0.12, w: 0.84, h: 0.1, lines: 1 },
-    { kind: 'photo', x: 0.08, y: 0.44, w: 0.32, h: 0.4 },
-    { kind: 'lines', x: 0.46, y: 0.3, w: 0.46, h: 0.5, lines: 6 },
-    { kind: 'mrz', x: 0.06, y: 0.88, w: 0.88, h: 0.09, lines: 2 },
+    { kind: 'lines', x: 0.24, y: 0.08, w: 0.6, h: 0.08, lines: 1 },
+    { kind: 'photo', x: 0.05, y: 0.16, w: 0.22, h: 0.6 },
+    { kind: 'lines', x: 0.33, y: 0.2, w: 0.62, h: 0.52, lines: 6 },
+    { kind: 'mrz', x: 0.05, y: 0.8, w: 0.9, h: 0.14, lines: 2 },
   ],
 };
 
@@ -139,9 +141,7 @@ export const DOCUMENT_SPECS: Record<DocumentType, DocumentSpec> = {
     endpoint: '/v3/store/ekyc/passport',
     ...PASSPORT,
     layout: PASSPORT_LAYOUT,
-    // Engine rejects the full open booklet ("Can not recognitize
-    // Passport") — submit just the data page: lower half of the spread,
-    // with a small overlap margin so the MRZ is never clipped.
-    submitRegion: { x: 0, y: 0.48, w: 1, h: 0.52 },
+    // The guide frames the data page directly (landscape), so the full
+    // guide crop is exactly what the engine wants — no submitRegion.
   },
 };

@@ -44,10 +44,11 @@ is dropped (never queued) while a previous frame is still being processed.
 8. **Acceptance checks** on the extreme-corner quad:
    - Aspect ratio = mean(top edge, bottom edge) / mean(left edge, right
      edge). Target **1.586** for ID-1 cards (Thai national ID, driver
-     license, bank book — 85.60 × 53.98 mm) and **0.71** for passports
-     (88 × 125 mm data page held **portrait**, the natural reading
-     orientation — photo bottom-left, MRZ across the bottom). Accept
-     within **±0.30** (`aspectTolerance`).
+     license, bank book — 85.60 × 53.98 mm) and **1.42** for passports
+     (the DATA PAGE only, 125 × 88 mm held **landscape** — the page with
+     the photo carries all the information, and framing just it yields a
+     larger, clearer capture than the full open booklet). Accept within
+     **±0.30** (`aspectTolerance`).
    - Corners must sit within the guide expanded by
      `guideCornerMarginFrac = 0.12` AND inside the frame border
      (`borderMarginPx = 6`); quad area between **50%–135%** of guide area
@@ -89,7 +90,7 @@ is dropped (never queued) while a previous frame is still being processed.
       `COLOR_YUV2BGR_NV21`).
 12. **Perspective correction**: scale corners to the captured resolution;
     `getPerspectiveTransform` → destination size at ~300 DPI:
-    **1011×637** (ID-1, landscape) or **1039×1476** (passport, portrait);
+    **1011×637** (ID-1) or **1476×1039** (passport data page);
     `warpPerspective(INTER_LINEAR)`; encode **JPEG quality 92**; assert
     result < 10 MB.
 13. **Submission**: multipart POST, field `file`, to the endpoint mapped
@@ -102,7 +103,7 @@ is dropped (never queued) while a previous frame is still being processed.
     | `thaiIdWithSignature` | `/v3/store/ekyc/thai-national-id-card-with-signature` | 1.586 |
     | `thaiDriverLicense` | `/v3/store/ekyc/thai-driver-license` | 1.586 |
     | `bookBank` | `/v3/store/ekyc/book-bank` | 1.586 |
-    | `passport` | `/v3/store/ekyc/passport` | 0.71 (portrait) |
+    | `passport` | `/v3/store/ekyc/passport` | 1.42 (data page, landscape) |
 
 ## UX state machine (strings localized via the i18n tables)
 
