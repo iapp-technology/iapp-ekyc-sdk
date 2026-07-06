@@ -138,6 +138,8 @@ class CaptureSession {
   private cardLikeWindow: boolean[] = [];
   /** Occupied+stable+sharp frames regardless of card-shape (long hold). */
   private gateFreeRun = 0;
+  /** Frames since a cardLike sighting (large = no card in view). */
+  private framesSinceCardLike = 10_000;
   /** Auto-snaps rejected by the engine with HTTP 420 (no document). */
   private noDocRetries = 0;
   /** Previous frame's gray guide crop, for the motion-stability check. */
@@ -263,6 +265,11 @@ class CaptureSession {
         this.cardLikeWindow.push(detection.cardLike);
         if (this.cardLikeWindow.length > 8) this.cardLikeWindow.shift();
         const cardSeen = this.cardLikeWindow.some(Boolean);
+        // Longer memory (~2 s) anchors the long-hold path and the chip: a
+        // flickery card detection keeps them alive, but an EMPTY frame
+        // (busy room background is "occupied" too) never activates them.
+        this.framesSinceCardLike = detection.cardLike ? 0 : this.framesSinceCardLike + 1;
+        const cardMemory = this.framesSinceCardLike <= this.params.longHoldCardMemoryFrames;
 
         // LEAKY accumulator: a single wobbly frame pauses progress instead
         // of erasing it — the old hard reset made the progress bar flicker
@@ -270,11 +277,11 @@ class CaptureSession {
         if (occupied && motionStable && sharp && cardSeen) this.easyRun += 1;
         else this.easyRun = Math.max(0, this.easyRun - 1);
 
-        // Long-hold guarantee: if the guide is occupied, steady and sharp
-        // for ~3 s, snap even when the card-shape gate never fires (washed-
-        // out edges, unusual documents). A wrong snap costs nothing — the
-        // engine's 420 "no document" resumes scanning unbilled.
-        if (occupied && motionStable && sharp) this.gateFreeRun += 1;
+        // Long-hold guarantee: if a card has been SIGHTED recently and the
+        // guide stays occupied, steady and sharp for ~3 s, snap even when
+        // the shape gate keeps flickering (washed-out edges). A wrong snap
+        // costs nothing — the engine's 420 resumes scanning unbilled.
+        if (occupied && motionStable && sharp && cardMemory) this.gateFreeRun += 1;
         else this.gateFreeRun = Math.max(0, this.gateFreeRun - 2);
 
         // Keep the drawn quad + quality crop: EMA-smooth accepted corners,
@@ -291,7 +298,11 @@ class CaptureSession {
           return;
         }
 
-        this.setState(!occupied ? 'searching' : !sharp ? 'tooBlurry' : 'holdStill');
+        // "Hold still" only once a card has actually been sighted — a busy
+        // room background counts as occupied, but must read as searching.
+        this.setState(
+          !occupied || !cardMemory ? 'searching' : !sharp ? 'tooBlurry' : 'holdStill',
+        );
         this.draw(guide, smoothed);
       } finally {
         detection.gray.delete();
@@ -494,6 +505,7 @@ class CaptureSession {
     overlay.freeze.style.display = 'none';
     this.easyRun = 0;
     this.gateFreeRun = 0;
+    this.framesSinceCardLike = 10_000;
     this.cardLikeWindow = [];
     this.smoothedQuad = null;
     this.setState('noDocument');

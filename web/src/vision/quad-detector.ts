@@ -206,6 +206,9 @@ export interface DetectionParams {
    * resume makes a wrong snap cost nothing.
    */
   longHoldSnapFrames: number;
+  /** Long-hold (and 'hold still' chip) require a cardLike sighting within
+   *  this many frames (~2 s) — an empty frame never long-hold-snaps. */
+  longHoldCardMemoryFrames: number;
 }
 
 export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
@@ -259,6 +262,7 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   easyMotionMaxMeanDiff: 14,
   easyStableFrames: 3,
   longHoldSnapFrames: 36,
+  longHoldCardMemoryFrames: 24,
 };
 
 export interface GuideRect {
