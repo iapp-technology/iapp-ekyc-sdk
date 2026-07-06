@@ -208,7 +208,8 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   // 7: a wider close kernel bridges glare/low-contrast gaps in the card
   // border so it survives as one closed contour.
   closeKernelSize: 7,
-  maxContourCandidates: 8,
+  // RETR_LIST yields inner+outer duplicates per boundary — examine more.
+  maxContourCandidates: 12,
   minGuideAreaFrac: 0.45,
   guideCornerMarginFrac: 0.12,
   borderMarginPx: 6,
@@ -418,11 +419,15 @@ export function detectQuad(
   edges.delete();
   kernel.delete();
 
-  // Step 6: external contours, largest first. `closed` stays alive for the
+  // Step 6: ALL contours (RETR_LIST), largest first. RETR_EXTERNAL missed
+  // the common real-world case: the hand gripping the document merges the
+  // document+hand+arm into one giant external blob, and the document's own
+  // crisp boundary (e.g. a passport data page) becomes an INTERIOR contour
+  // that never surfaces as a candidate. `closed` stays alive for the
   // candidate loop's edge-support check and is deleted after it.
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
-  cv.findContours(closed, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+  cv.findContours(closed, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
   hierarchy.delete();
 
   const indexed: Array<{ index: number; area: number }> = [];

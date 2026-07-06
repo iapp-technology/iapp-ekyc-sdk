@@ -87,6 +87,7 @@ export interface CV {
   MORPH_RECT: number;
   MORPH_CLOSE: number;
   RETR_EXTERNAL: number;
+  RETR_LIST: number;
   CHAIN_APPROX_SIMPLE: number;
   CV_8UC1: number;
   CV_8UC4: number;
