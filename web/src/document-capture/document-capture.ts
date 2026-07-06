@@ -140,6 +140,8 @@ class CaptureSession {
   private gateFreeRun = 0;
   /** Frames since a cardLike sighting (large = no card in view). */
   private framesSinceCardLike = 10_000;
+  /** True once something visibly entered the guide (arming event). */
+  private armed = false;
   /** Auto-snaps rejected by the engine with HTTP 420 (no document). */
   private noDocRetries = 0;
   /** Previous frame's gray guide crop, for the motion-stability check. */
@@ -248,41 +250,44 @@ class CaptureSession {
         // user is cooperatively presenting a card, so the guide crop already
         // contains the whole card; an accepted quad, when present, only
         // improves the crop (perspective-corrected).
+        // CAPTURE MODEL: arm -> sight -> stabilize -> snap.
+        // 1. ARM: something must visibly ENTER the guide (one big frame
+        //    change). A static scene — doorframes, cabinets, a seated user
+        //    — never arms, which is the structural no-card protection.
+        // 2. SIGHT: a document-shaped quad with straight supported edges
+        //    (cardLike) seen recently. Geometry is loose; the edge-support
+        //    rule is the face/torso guard.
+        // 3. STABILIZE + SNAP: fast path when sightings are consistent
+        //    (~0.4 s); long-hold path guarantees a snap within ~2.5 s of a
+        //    steady hold even when sighting flickers. Per-frame quality
+        //    signals (edge density, sharpness) are HINTS only — a blank
+        //    Thai ID back defeats both.
         const guideCrop = this.extractGuideCrop(cv, detection.gray, guide);
         const sharp = laplacianVariance(cv, guideCrop) >= this.params.minSharpness;
-        // `isMotionStable` takes ownership of `guideCrop`, keeping it as the
-        // new prevGuideCrop for the next frame's diff (guideCrop stays valid
-        // above because ownership only transfers here).
-        const motionStable = this.isMotionStable(cv, guideCrop);
-        const occupied = detection.guideEdgeDensity >= this.params.occupancyMinEdgeDensity;
+        const motion = this.guideMotionMeanDiff(cv, guideCrop); // takes ownership
+        const motionStable = motion !== null && motion <= this.params.easyMotionMaxMeanDiff;
+        if (motion !== null && motion >= this.params.armMotionMeanDiff) this.armed = true;
 
-        // cardLike gate: a card-sized rectangle must have been seen IN the
-        // guide recently. Edge density alone is met by any busy scene (a
-        // face, a room) — without this gate the flow snapped on the user's
-        // face and the OCR engine rejected it with HTTP 420. Detection
-        // flickers frame-to-frame, so one sighting in the last 8 frames is
-        // enough (a face NEVER produces a guide-centered card-ratio rect).
         this.cardLikeWindow.push(detection.cardLike);
         if (this.cardLikeWindow.length > 8) this.cardLikeWindow.shift();
-        const cardSeen = this.cardLikeWindow.some(Boolean);
-        // Longer memory (~2 s) anchors the long-hold path and the chip: a
-        // flickery card detection keeps them alive, but an EMPTY frame
-        // (busy room background is "occupied" too) never activates them.
+        const cardHits = this.cardLikeWindow.filter(Boolean).length;
         this.framesSinceCardLike = detection.cardLike ? 0 : this.framesSinceCardLike + 1;
-        const cardMemory = this.framesSinceCardLike <= this.params.longHoldCardMemoryFrames;
+        const cardMemory =
+          this.armed && this.framesSinceCardLike <= this.params.longHoldCardMemoryFrames;
 
-        // LEAKY accumulator: a single wobbly frame pauses progress instead
-        // of erasing it — the old hard reset made the progress bar flicker
-        // to zero on any tiny hand movement.
-        if (occupied && motionStable && sharp && cardSeen) this.easyRun += 1;
-        else this.easyRun = Math.max(0, this.easyRun - 1);
-
-        // Long-hold guarantee: if a card has been SIGHTED recently and the
-        // guide stays occupied, steady and sharp for ~3 s, snap even when
-        // the shape gate keeps flickering (washed-out edges). A wrong snap
-        // costs nothing — the engine's 420 resumes scanning unbilled.
-        if (occupied && motionStable && sharp && cardMemory) this.gateFreeRun += 1;
-        else this.gateFreeRun = Math.max(0, this.gateFreeRun - 2);
+        if (!cardMemory) {
+          // No card around: hard reset so stale residue can never cause an
+          // instant snap the moment a card enters.
+          this.easyRun = 0;
+          this.gateFreeRun = 0;
+        } else {
+          // Fast path: consistent sightings + steady hold (leaky decay).
+          if (motionStable && cardHits >= 2) this.easyRun += 1;
+          else this.easyRun = Math.max(0, this.easyRun - 1);
+          // Long-hold guarantee: steady hold with a card in memory.
+          if (motionStable) this.gateFreeRun += 1;
+          else this.gateFreeRun = Math.max(0, this.gateFreeRun - 2);
+        }
 
         // Keep the drawn quad + quality crop: EMA-smooth accepted corners,
         // reset the smoother on a rejected frame so re-acquisition is fresh.
@@ -291,18 +296,14 @@ class CaptureSession {
         if (smoothed) this.lastQuadProcessed = smoothed;
 
         if (
-          this.easyRun >= this.params.easyStableFrames ||
+          this.easyRun >= this.params.easyStableFrames + 2 ||
           this.gateFreeRun >= this.params.longHoldSnapFrames
         ) {
           void this.capture(smoothed, { auto: true });
           return;
         }
 
-        // "Hold still" only once a card has actually been sighted — a busy
-        // room background counts as occupied, but must read as searching.
-        this.setState(
-          !occupied || !cardMemory ? 'searching' : !sharp ? 'tooBlurry' : 'holdStill',
-        );
+        this.setState(!cardMemory ? 'searching' : !sharp ? 'tooBlurry' : 'holdStill');
         this.draw(guide, smoothed);
       } finally {
         detection.gray.delete();
@@ -332,14 +333,13 @@ class CaptureSession {
   }
 
   /**
-   * Mean-abs-diff of `guideCrop` vs the previous frame's crop <=
-   * `easyMotionMaxMeanDiff`. TAKES OWNERSHIP of `guideCrop`: the old
-   * prevGuideCrop is deleted and `guideCrop` becomes the new one. The first
-   * frame (no previous crop, or a size change) is never motion-stable.
+   * Mean-abs-diff of `guideCrop` vs the previous frame's crop, or null on
+   * the first frame / a size change. TAKES OWNERSHIP of `guideCrop`: the
+   * old prevGuideCrop is deleted and `guideCrop` becomes the new one.
    */
-  private isMotionStable(cv: CV, guideCrop: CvMat): boolean {
+  private guideMotionMeanDiff(cv: CV, guideCrop: CvMat): number | null {
     const prev = this.prevGuideCrop;
-    let stable = false;
+    let motion: number | null = null;
     if (prev && prev.rows === guideCrop.rows && prev.cols === guideCrop.cols) {
       const diff = new cv.Mat();
       const mean = new cv.Mat();
@@ -347,7 +347,7 @@ class CaptureSession {
       try {
         cv.absdiff(guideCrop, prev, diff);
         cv.meanStdDev(diff, mean, stddev);
-        stable = mean.data64F[0] <= this.params.easyMotionMaxMeanDiff;
+        motion = mean.data64F[0];
       } finally {
         diff.delete();
         mean.delete();
@@ -356,7 +356,7 @@ class CaptureSession {
     }
     if (prev) prev.delete();
     this.prevGuideCrop = guideCrop;
-    return stable;
+    return motion;
   }
 
   /** Draw the overlay in native-video coordinates. */

@@ -220,6 +220,12 @@ export interface DetectionParams {
   /** Long-hold (and 'hold still' chip) require a cardLike sighting within
    *  this many frames (~2 s) — an empty frame never long-hold-snaps. */
   longHoldCardMemoryFrames: number;
+  /**
+   * ARMING: capture paths activate only after the guide content CHANGES by
+   * at least this mean-abs-diff once (something ENTERED the frame). A
+   * static empty scene — doorframes, cabinets, a seated user — never arms.
+   */
+  armMotionMeanDiff: number;
 }
 
 export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
@@ -254,11 +260,14 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   manualFallbackMs: 4_000,
   targetFps: 12,
   guideWidthFrac: 0.8,
-  // 1.15: a hand merged under the card skews the ratio down slightly.
-  cardLikeAspectMin: 1.15,
-  cardLikeAspectMax: 2.4,
-  cardLikeMaxGuideAreaFrac: 1.5,
-  cardLikeMinGuideAreaFrac: 0.35,
+  // Loose geometry: the REAL discriminator is hasDocumentEdges (2 strong
+  // straight sides) + the entry-arming in the capture flow. Held documents
+  // merge with fingers and overfill the guide; bounds only exclude the
+  // absurd.
+  cardLikeAspectMin: 1.1,
+  cardLikeAspectMax: 3.0,
+  cardLikeMaxGuideAreaFrac: 2.0,
+  cardLikeMinGuideAreaFrac: 0.3,
   // 0.32: blank documents (Thai ID BACK) have faint boundaries; the
   // face-guard holds because torso hulls score near zero on 2+ sides.
   cardLikeEdgeSupportMin: 0.32,
@@ -279,6 +288,7 @@ export const DEFAULT_DETECTION_PARAMS: DetectionParams = {
   easyStableFrames: 3,
   longHoldSnapFrames: 30,
   longHoldCardMemoryFrames: 24,
+  armMotionMeanDiff: 25,
 };
 
 export interface GuideRect {
@@ -496,11 +506,13 @@ export function detectQuad(
     // without Canny-edge support, while a document boundary supports all 4.
     const ratio = aspect >= 1 ? aspect : 1 / aspect;
     const qc = centroid(quad);
+    const cmx = guideRect.width * 0.15;
+    const cmy = guideRect.height * 0.15;
     const centroidInGuideBox =
-      qc.x >= guideRect.x &&
-      qc.x <= guideRect.x + guideRect.width &&
-      qc.y >= guideRect.y &&
-      qc.y <= guideRect.y + guideRect.height;
+      qc.x >= guideRect.x - cmx &&
+      qc.x <= guideRect.x + guideRect.width + cmx &&
+      qc.y >= guideRect.y - cmy &&
+      qc.y <= guideRect.y + guideRect.height + cmy;
     if (
       !cardLike &&
       centroidInGuideBox &&
