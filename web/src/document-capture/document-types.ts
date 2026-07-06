@@ -41,6 +41,12 @@ export interface DocumentSpec {
   warpHeight: number;
   /** Schematic hint layout for the HUD guide. */
   layout: CardLayout;
+  /**
+   * Region of the GUIDE (normalized 0..1) actually submitted to the API.
+   * Passport: the user frames the full open booklet (portrait guide), but
+   * the OCR engine wants only the DATA PAGE — the landscape lower half.
+   */
+  submitRegion?: { x: number; y: number; w: number; h: number };
 }
 
 /** ID-1 card geometry (85.60 x 53.98 mm, landscape). */
@@ -133,5 +139,9 @@ export const DOCUMENT_SPECS: Record<DocumentType, DocumentSpec> = {
     endpoint: '/v3/store/ekyc/passport',
     ...PASSPORT,
     layout: PASSPORT_LAYOUT,
+    // Engine rejects the full open booklet ("Can not recognitize
+    // Passport") — submit just the data page: lower half of the spread,
+    // with a small overlap margin so the MRZ is never clipped.
+    submitRegion: { x: 0, y: 0.48, w: 1, h: 0.52 },
   },
 };

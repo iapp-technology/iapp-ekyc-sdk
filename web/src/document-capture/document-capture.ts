@@ -410,17 +410,26 @@ class CaptureSession {
           spec.aspect,
           this.params.guideWidthFrac,
         );
+        // Some documents submit only a sub-region of the guide (passport:
+        // the data page — the lower half of the open booklet).
+        const region = spec.submitRegion ?? { x: 0, y: 0, w: 1, h: 1 };
+        const src = {
+          x: (guide.x + region.x * guide.width) * scaleUp,
+          y: (guide.y + region.y * guide.height) * scaleUp,
+          width: guide.width * region.w * scaleUp,
+          height: guide.height * region.h * scaleUp,
+        };
         const crop = document.createElement('canvas');
-        crop.width = Math.round(guide.width * scaleUp);
-        crop.height = Math.round(guide.height * scaleUp);
+        crop.width = Math.round(src.width);
+        crop.height = Math.round(src.height);
         const cctx = crop.getContext('2d');
         if (!cctx) throw new EkycError('Could not create crop canvas');
         cctx.drawImage(
           full,
-          guide.x * scaleUp,
-          guide.y * scaleUp,
-          guide.width * scaleUp,
-          guide.height * scaleUp,
+          src.x,
+          src.y,
+          src.width,
+          src.height,
           0,
           0,
           crop.width,
