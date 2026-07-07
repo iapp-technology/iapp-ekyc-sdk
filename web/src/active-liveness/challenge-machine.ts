@@ -90,31 +90,35 @@ export interface ChallengeMachineConfig {
   findFaceMaxAbsPitchDeg: number;
   /** findFace: centerOffsetFrac < 0.12. */
   maxCenterOffsetFrac: number;
-  /** blink fallback (no baseline yet): both eyes < 0.2 ... */
+  /** blink fallback (no baseline yet): mean eye openness < 0.2 ... */
   blinkClosedBelow: number;
-  /** ... THEN both > 0.7 ... */
+  /** ... THEN mean eye openness > 0.7 ... */
   blinkOpenAbove: number;
-  /** ... within 1.5 s of the closed sample. */
+  /** ... within 2 s of the closed sample. */
   blinkReopenWindowMs: number;
   /**
    * Adaptive blink: the machine tracks the user's own open-eye baseline
-   * (EMA of min(left,right) over frontal frames). Glasses/small-eyes users
-   * often never dip below the absolute threshold, so the effective closed
-   * threshold becomes clamp(baseline * blinkRelClosedFrac,
-   * blinkClosedFloor, blinkClosedCeil) and the reopen threshold
-   * min(blinkOpenAbove, baseline * blinkRelOpenFrac).
+   * (EMA of mean(left,right) over frontal frames). Glasses / small eyes /
+   * strong backlight compress MediaPipe's blink scores, so the closed test
+   * runs on the MEAN of both eyes against clamp(baseline *
+   * blinkRelClosedFrac, blinkClosedFloor, blinkClosedCeil), and reopen
+   * against min(blinkOpenAbove, baseline * blinkRelOpenFrac). A wink still
+   * cannot pass: EACH eye must additionally dip below baseline *
+   * blinkPerEyeDipFrac (an eye behind glare dips a little; a deliberately
+   * held-open eye does not dip at all).
    */
   blinkRelClosedFrac: number;
   blinkRelOpenFrac: number;
   blinkClosedFloor: number;
   blinkClosedCeil: number;
+  blinkPerEyeDipFrac: number;
   /** turn: yaw delta from baseline >= 18 deg in the required direction. */
   turnYawDeltaDeg: number;
   /** turn: then return to |yaw| < 12 deg to complete. */
   turnReturnAbsYawBelowDeg: number;
-  /** smile: smile >= 0.8 ... */
+  /** smile: smile >= 0.45 (max of mouthSmileLeft/Right, see face-metrics) ... */
   smileAbove: number;
-  /** ... sustained 500 ms. */
+  /** ... sustained 350 ms. */
   smileHoldMs: number;
   /** Anti-cheat: face lost longer than this restarts the challenge (1 s). */
   faceLostGraceMs: number;
@@ -140,15 +144,16 @@ export const DEFAULT_CHALLENGE_MACHINE_CONFIG: Omit<ChallengeMachineConfig, 'rng
   maxCenterOffsetFrac: 0.12,
   blinkClosedBelow: 0.2,
   blinkOpenAbove: 0.7,
-  blinkReopenWindowMs: 1500,
-  blinkRelClosedFrac: 0.55,
-  blinkRelOpenFrac: 0.85,
-  blinkClosedFloor: 0.15,
-  blinkClosedCeil: 0.5,
+  blinkReopenWindowMs: 2000,
+  blinkRelClosedFrac: 0.72,
+  blinkRelOpenFrac: 0.8,
+  blinkClosedFloor: 0.12,
+  blinkClosedCeil: 0.55,
+  blinkPerEyeDipFrac: 0.85,
   turnYawDeltaDeg: 18,
   turnReturnAbsYawBelowDeg: 12,
-  smileAbove: 0.8,
-  smileHoldMs: 500,
+  smileAbove: 0.45,
+  smileHoldMs: 350,
   faceLostGraceMs: 1000,
   maxRestarts: 3,
   challengeTimeoutMs: 15_000,
@@ -321,18 +326,19 @@ export class ChallengeMachine {
   }
 
   /**
-   * EMA of the user's own open-eye level, sampled on frames where the eyes
-   * are at (or near) their typical openness. Never pulled down by blinks:
-   * samples below 80% of the current baseline are ignored.
+   * EMA of the user's own open-eye level (MEAN of both eyes — the mean is
+   * robust to one eye reading low behind glasses glare), sampled on frames
+   * where the eyes are at (or near) their typical openness. Never pulled
+   * down by blinks: samples below 80% of the current baseline are ignored.
    */
   private updateEyeBaseline(obs: FaceObservation): void {
-    const minEye = Math.min(obs.leftEyeOpen, obs.rightEyeOpen);
+    const meanEye = (obs.leftEyeOpen + obs.rightEyeOpen) / 2;
     if (this.eyeBaseline === null) {
-      if (minEye > 0.3) this.eyeBaseline = minEye;
+      if (meanEye > 0.3) this.eyeBaseline = meanEye;
       return;
     }
-    if (minEye >= this.eyeBaseline * 0.8) {
-      this.eyeBaseline = this.eyeBaseline * 0.8 + minEye * 0.2;
+    if (meanEye >= this.eyeBaseline * 0.8) {
+      this.eyeBaseline = this.eyeBaseline * 0.8 + meanEye * 0.2;
     }
   }
 
@@ -435,8 +441,11 @@ export class ChallengeMachine {
     switch (cur.type) {
       case 'blink': {
         // Adaptive thresholds calibrated to this user's open-eye baseline —
-        // glasses/small-eyes users rarely reach the absolute floor.
+        // glasses / small eyes / backlight compress the blink scores, so
+        // depth is judged on the MEAN of both eyes. The per-eye dip gate
+        // keeps a wink from passing: each eye must dip at least a little.
         const base = this.eyeBaseline;
+        const meanEye = (obs.leftEyeOpen + obs.rightEyeOpen) / 2;
         const closedThr =
           base === null
             ? this.cfg.blinkClosedBelow
@@ -451,8 +460,13 @@ export class ChallengeMachine {
                 closedThr + 0.05,
                 Math.min(this.cfg.blinkOpenAbove, base * this.cfg.blinkRelOpenFrac),
               );
-        const closed = obs.leftEyeOpen < closedThr && obs.rightEyeOpen < closedThr;
-        const open = obs.leftEyeOpen > openThr && obs.rightEyeOpen > openThr;
+        const perEyeDipGate =
+          base === null ? this.cfg.blinkOpenAbove : base * this.cfg.blinkPerEyeDipFrac;
+        const closed =
+          meanEye < closedThr &&
+          obs.leftEyeOpen < perEyeDipGate &&
+          obs.rightEyeOpen < perEyeDipGate;
+        const open = meanEye > openThr;
         if (closed) {
           // Track the most recent closed sample; the reopen window runs
           // from here. A static closed-eyes photo never satisfies `open`,

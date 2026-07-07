@@ -141,12 +141,12 @@ function fakeResult(overrides: Partial<FaceLandmarkerResultLike> = {}): FaceLand
 describe('mapObservation', () => {
   const opts = { frameWidth: 640, frameHeight: 480 };
 
-  it('maps blendshapes: eyeOpen = 1 - blink, smile = mean(L, R)', () => {
+  it('maps blendshapes: eyeOpen = 1 - blink, smile = max(L, R)', () => {
     const obs = mapObservation(fakeResult(), opts);
     expect(obs.count).toBe(1);
     expect(obs.leftEyeOpen).toBeCloseTo(0.9, 6);
     expect(obs.rightEyeOpen).toBeCloseTo(0.8, 6);
-    expect(obs.smile).toBeCloseTo(0.7, 6);
+    expect(obs.smile).toBeCloseTo(0.8, 6);
     expect(obs.yawDeg).toBeCloseTo(20, 3);
   });
 

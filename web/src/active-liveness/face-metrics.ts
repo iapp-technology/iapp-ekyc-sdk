@@ -10,7 +10,9 @@
  *     roll  = atan2(r10, r11)
  *   Sign convention (spec): yaw + = user turned to THEIR left,
  *   pitch + = looking up. Unit-tested against hand-built rotation matrices.
- * - eyeOpen = 1 - eyeBlink{Left,Right}; smile = mean(mouthSmileLeft/Right).
+ * - eyeOpen = 1 - eyeBlink{Left,Right}; smile = max(mouthSmileLeft/Right)
+ *   (max, not mean: natural smiles are often asymmetric and the mean
+ *   under-reports them).
  */
 import type { FaceObservation } from './challenge-machine';
 
@@ -163,10 +165,10 @@ export function mapObservation(
   const categories = result.faceBlendshapes[0]?.categories;
   const leftEyeOpen = 1 - blendshapeScore(categories, 'eyeBlinkLeft');
   const rightEyeOpen = 1 - blendshapeScore(categories, 'eyeBlinkRight');
-  const smile =
-    (blendshapeScore(categories, 'mouthSmileLeft') +
-      blendshapeScore(categories, 'mouthSmileRight')) /
-    2;
+  const smile = Math.max(
+    blendshapeScore(categories, 'mouthSmileLeft'),
+    blendshapeScore(categories, 'mouthSmileRight'),
+  );
 
   return {
     count,

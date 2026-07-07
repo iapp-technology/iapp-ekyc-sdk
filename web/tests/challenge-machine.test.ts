@@ -236,11 +236,12 @@ describe('ChallengeMachine — blink specifics', () => {
     expect(rig.machine.completedChallenges.length).toBe(0);
   });
 
-  it('reopen must happen within 1.5 s of the closed sample', () => {
+  it('reopen must happen within 2 s of the closed sample', () => {
     const rig = blinkRig();
     rig.frame(face({ leftEyeOpen: 0.05, rightEyeOpen: 0.05 }));
-    // Eyes half-open (neither closed nor open) for > 1.5 s...
-    for (let i = 0; i < 20; i++) rig.frame(face({ leftEyeOpen: 0.5, rightEyeOpen: 0.5 }));
+    // Eyes in the dead zone (neither closed nor open: baseline 0.95 ->
+    // closed < 0.55, open > 0.7) for > 2 s...
+    for (let i = 0; i < 21; i++) rig.frame(face({ leftEyeOpen: 0.62, rightEyeOpen: 0.62 }));
     rig.frame(face()); // ...then fully open — too late.
     expect(rig.machine.state.currentChallenge).toBe('blink');
     expect(rig.machine.completedChallenges.length).toBe(0);
@@ -265,10 +266,41 @@ describe('ChallengeMachine — blink specifics', () => {
     const glassesFace = { leftEyeOpen: 0.55, rightEyeOpen: 0.55 };
     for (let i = 0; i < 25; i++) rig.frame(face(glassesFace));
     expect(rig.machine.state.currentChallenge).toBe('blink');
-    // baseline ≈ 0.55 → closed < ~0.30, reopen > ~0.47.
+    // baseline ≈ 0.55 → closed mean < ~0.40, reopen mean > ~0.45.
     rig.frame(face({ leftEyeOpen: 0.28, rightEyeOpen: 0.28 }));
     rig.frame(face({ leftEyeOpen: 0.5, rightEyeOpen: 0.5 }));
     expect(rig.machine.completedChallenges.map((c) => c.type)).toEqual(['blink']);
+  });
+
+  it('BACKLIT + GLASSES: one eye behind glare dips less — mean still detects the blink', () => {
+    // Strong backlight compresses both scores; the right lens catches glare
+    // so that eye's blink signal is shallow. The per-eye AND on a strict
+    // threshold used to reject exactly this. Mean depth + lenient per-eye
+    // dip gate must accept it.
+    const rig = makeRig();
+    rig.machine.start();
+    const backlit = { leftEyeOpen: 0.55, rightEyeOpen: 0.55 };
+    for (let i = 0; i < 25; i++) rig.frame(face(backlit));
+    expect(rig.machine.state.currentChallenge).toBe('blink');
+    // baseline ≈ 0.55: closed mean < ~0.396, per-eye dip gate < ~0.4675.
+    rig.frame(face({ leftEyeOpen: 0.3, rightEyeOpen: 0.42 })); // mean 0.36
+    rig.frame(face({ leftEyeOpen: 0.55, rightEyeOpen: 0.55 })); // reopen
+    expect(rig.machine.completedChallenges.map((c) => c.type)).toEqual(['blink']);
+  });
+
+  it('STATIC PHOTO at half-openness never registers a blink', () => {
+    // A photo whose eye-open level reads ~0.5 forever: the baseline adapts
+    // to 0.5, the closed threshold drops below it, and with no dip there is
+    // never a closed sample — the challenge cannot complete.
+    const rig = makeRig();
+    rig.machine.start();
+    const photo = { leftEyeOpen: 0.5, rightEyeOpen: 0.5 };
+    for (let i = 0; i < 25; i++) rig.frame(face(photo));
+    expect(rig.machine.state.currentChallenge).toBe('blink');
+    for (let i = 0; i < 100 && rig.machine.state.phase === 'challenge'; i++) {
+      rig.frame(face(photo));
+      expect(rig.machine.completedChallenges.length).toBe(0);
+    }
   });
 });
 

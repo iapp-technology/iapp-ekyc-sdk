@@ -35,7 +35,8 @@ interface FaceObservation {
 - **Web** (`face-metrics.ts`): MediaPipe Face Landmarker with blendshapes +
   facial transformation matrix. Euler angles from matrix decomposition
   (unit-tested against known matrices); `eyeOpen = 1 − eyeBlink{Left,Right}`;
-  `smile = mean(mouthSmileLeft, mouthSmileRight)`.
+  `smile = max(mouthSmileLeft, mouthSmileRight)` (max, not mean — natural
+  smiles are often asymmetric).
 
 ## State machine
 
@@ -49,21 +50,23 @@ Pure code (no camera/ML imports), RNG injectable for tests:
 - **Challenges**: draw **N = 3** distinct challenges uniformly at random
   from `{blink, turnLeft, turnRight, smile}` (`challengeCount`,
   `challengePool` configurable). Completion predicates:
-  - **blink** — both eyes below the closed threshold, THEN both above the
-    reopen threshold within **1.5 s** of the closed sample. The
+  - **blink** — MEAN eye openness below the closed threshold, THEN mean
+    above the reopen threshold within **2 s** of the closed sample. The
     closed→open transition is mandatory (a printed photo of closed eyes
     must NOT pass). Thresholds are **adaptive**: the machine tracks the
-    user's own open-eye baseline (EMA of min(left,right) over frontal
+    user's own open-eye baseline (EMA of mean(left,right) over frontal
     frames, samples below 80% of baseline ignored); closed =
-    `clamp(baseline × 0.55, 0.15, 0.5)`, reopen =
-    `min(0.7, baseline × 0.85)` (≥ closed + 0.05). With no baseline yet,
-    absolute fallbacks **0.2 / 0.7** apply. Glasses and small-eyes users
-    rarely reach the absolute floor — the relative rule is what makes
-    blink detection reliable for them.
+    `clamp(baseline × 0.72, 0.12, 0.55)`, reopen =
+    `min(0.7, baseline × 0.8)` (≥ closed + 0.05). With no baseline yet,
+    absolute fallbacks **0.2 / 0.7** apply. Depth is judged on the mean
+    because glasses glare / strong backlight can flatten ONE eye's blink
+    score; a wink still cannot pass because each eye must additionally
+    dip below `baseline × 0.85` (per-eye dip gate).
   - **turnLeft / turnRight** — yaw delta from the baseline captured at
     challenge issue ≥ **18°** in the required direction, then return to
     `|yaw| < 12°` to complete.
-  - **smile** — `smile ≥ 0.8` sustained **500 ms**.
+  - **smile** — `smile ≥ 0.45` sustained **350 ms** (score is the max of
+    the two mouth-corner blendshapes; a neutral face reads < 0.2).
 - **Anti-cheat**: face lost > 1 s, `count ≠ 1`, or tracking-ID change
   (Flutter) → restart the current challenge. **3** restarts of one
   challenge or **15 s** timeout per challenge → `failed(reason)`.
