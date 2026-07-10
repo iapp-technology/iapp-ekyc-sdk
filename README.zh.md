@@ -4,7 +4,14 @@
 
 [iApp Technology](https://iapp.co.th) 企业级 eKYC API 的免费开源客户端
 SDK——泰国身份证/护照自动拍摄、人脸主动活体检测、人脸比对与静默活体检测,
-支持 **Flutter(Android/iOS)** 与 **Web(HTML5/JavaScript)** 平台。
+支持 **Web(HTML5/JavaScript)**、**Flutter(Android/iOS)**、
+**原生 iOS(Swift/Objective-C)**、**原生 Android(Kotlin/Java)** 与
+**React Native** 平台。
+
+Web 与 Flutter 包在设备端直接运行采集引擎;iOS、Android 与 React Native
+包则是轻量原生外壳,通过托管的 WebView 桥接页面调用同一套生产级 Web
+引擎——各平台采集质量完全一致,且几乎不增加安装包体积
+([docs/WEBVIEW_BRIDGE.md](docs/WEBVIEW_BRIDGE.md))。
 
 SDK 本身完全免费(Apache-2.0 许可证),API 调用按次计费,须使用您的 iApp
 API 密钥 — [请在此申请密钥](https://iapp.co.th/control/api-keys)。
@@ -71,11 +78,89 @@ const result = await ekyc.captureDocument({
 });
 ```
 
+## 快速开始 — iOS(Swift / Objective-C)
+
+在 Xcode 中选择 **File → Add Package Dependencies…** →
+`https://github.com/iapp-technology/iapp-ekyc-sdk`(产品 **IappEkyc**),
+并在 Info.plist 中添加 `NSCameraUsageDescription`:
+
+```swift
+import IappEkyc
+
+let config = IappEkycConfig(apiKey: "YOUR_API_KEY", flow: .documentCapture)
+config.documentType = .thaiIdFront
+config.locale = .zh
+
+IappEkycSdk.present(from: self, config: config) { result in
+    if case .success(let outcome) = result {
+        print(outcome.document?.rawJSON ?? [:])
+    }
+}
+```
+
+完整支持 Objective-C — 详见 [ios/README.md](ios/README.md)。
+
+## 快速开始 — Android(Kotlin / Java)
+
+```kotlin
+// settings.gradle.kts: repositories { maven("https://jitpack.io") }
+// app/build.gradle.kts:
+dependencies { implementation("com.github.iapp-technology:iapp-ekyc-sdk:v0.2.0") }
+```
+
+```kotlin
+val config = IappEkycConfig.Builder("YOUR_API_KEY").locale(EkycLocale.ZH).build()
+
+private val ekyc = registerForActivityResult(IappEkycContract()) { result ->
+    when (result) {
+        is IappEkycResult.DocumentCaptured -> handleOcr(result.rawJson)
+        is IappEkycResult.Failed -> show(result.error)
+        else -> {}
+    }
+}
+ekyc.launch(IappEkycRequest.DocumentCapture(config, EkycDocumentType.THAI_ID_FRONT))
+```
+
+完整支持 Java(`IappEkyc.start(...)` 回调 API)— 详见
+[android/README.md](android/README.md)。
+
+## 快速开始 — React Native
+
+```bash
+git clone https://github.com/iapp-technology/iapp-ekyc-sdk
+npm install ./iapp-ekyc-sdk/react-native react-native-webview
+```
+
+```tsx
+import { IappEkycFlow } from '@iapp-technology/react-native-ekyc-sdk';
+
+<Modal visible={active} presentationStyle="fullScreen">
+  <IappEkycFlow
+    flow="documentCapture"
+    documentType="thaiIdFront"
+    apiKey="YOUR_API_KEY"
+    locale="zh"
+    onResult={(r) => { setActive(false); console.log(r); }}
+    onError={(e) => setActive(false)}
+    onCancel={() => setActive(false)}
+  />
+</Modal>
+```
+
+摄像头权限配置请参阅 [react-native/README.md](react-native/README.md)。
+
 ## 系统要求
 
 - **Flutter**:≥ 3.32 / Dart ≥ 3.8 · Android minSdk 24 · iOS 15.5 及以上
 - **Web**:支持 WebAssembly 与 `getUserMedia` 的现代浏览器
   (须使用 HTTPS 或 localhost)
+- **iOS(原生)**:iOS 15 及以上 · Swift Package Manager ·
+  须配置 `NSCameraUsageDescription`
+- **Android(原生)**:minSdk 24 · 最新版 Android System WebView
+  (建议 Chrome/WebView ≥ 100)
+- **React Native**:RN ≥ 0.72 · `react-native-webview` ≥ 13.6
+- 原生 iOS / Android / React Native 外壳运行时需要访问
+  `https://iapp.co.th/sdk/webview.html`(eKYC 调用 API 本身即需联网)
 
 ## 安全提示
 

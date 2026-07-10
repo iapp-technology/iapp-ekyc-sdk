@@ -96,8 +96,12 @@ Pure code (no camera/ML imports), RNG injectable for tests:
 }
 ```
 
-- `sdk.name` ∈ `iapp-ekyc-sdk-flutter` | `iapp-ekyc-sdk-web`;
-  `platform` ∈ `android` | `ios` | `web`.
+- `sdk.name` ∈ `iapp-ekyc-sdk-flutter` | `iapp-ekyc-sdk-web` |
+  `iapp-ekyc-sdk-ios` | `iapp-ekyc-sdk-android` | `iapp-ekyc-sdk-react-native`;
+  `platform` ∈ `android` | `ios` | `web`. Wrapper SDKs (WebView shells,
+  docs/WEBVIEW_BRIDGE.md) report their identity via the engine's
+  `integration` option; React Native reports `ios`/`android`, never a
+  platform of its own.
 - `type` wire values: `blink`, `turn_left`, `turn_right`, `smile`
   (snake_case on the wire; camelCase enums in code).
 - All timestamps are Unix epoch **milliseconds**. The server enforces

@@ -1,6 +1,6 @@
 {
   "name": "@iapp-technology/ekyc-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "iApp eKYC Web SDK - Thai document auto-capture (OCR), face active/passive liveness, and face verification.",
   "type": "module",
   "license": "Apache-2.0",
@@ -44,6 +44,7 @@
     "@techstark/opencv-js": "^4.12.0-release.1"
   },
   "devDependencies": {
+    "@types/node": "^26.1.1",
     "jpeg-js": "^0.4.4",
     "typescript": "^5.7.2",
     "vite": "^6.3.5",

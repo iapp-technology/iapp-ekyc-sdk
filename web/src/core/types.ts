@@ -78,6 +78,21 @@ export interface ActiveLivenessResult extends ApiResult {
   selfieImage?: Blob;
 }
 
+/**
+ * Identity of a wrapper SDK embedding this engine (native iOS / Android /
+ * React Native WebView shells, docs/WEBVIEW_BRIDGE.md). Reported in the
+ * active-liveness challenge log `sdk` block; omitted fields fall back to
+ * the web engine's own identity.
+ */
+export interface SdkIntegration {
+  /** Wire `sdk.name`, e.g. 'iapp-ekyc-sdk-ios' (docs/ACTIVE_LIVENESS.md). */
+  name?: string;
+  /** Wire `sdk.platform`. Wrappers report the real OS, never 'web'. */
+  platform?: 'android' | 'ios' | 'web';
+  /** Wrapper version. Convention: '<wrapperVersion>+engine.<SDK_VERSION>'. */
+  version?: string;
+}
+
 /** Challenge log wire schema (docs/ACTIVE_LIVENESS.md) — snake_case. */
 export interface ChallengeLogWire {
   session_id: string;

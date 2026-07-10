@@ -6,7 +6,7 @@
 
 // Facade
 export { IappEkyc, type IappEkycOptions } from './iapp-ekyc';
-export { SDK_NAME, SDK_VERSION } from './version';
+export { SDK_NAME, SDK_VERSION, resolveSdkIdentity } from './version';
 
 // Core API
 export { EkycApiClient, type EkycApiClientOptions } from './core/api-client';
@@ -38,6 +38,7 @@ export type {
   ActiveLivenessVerdict,
   ActiveLivenessSelfieEcho,
   ChallengeLogWire,
+  SdkIntegration,
 } from './core/types';
 
 // Theming (docs/THEMING.md)

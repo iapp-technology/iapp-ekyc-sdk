@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>iApp eKYC</title>
+<!--
+  iApp eKYC WebView host page — bridge protocol v1 (docs/WEBVIEW_BRIDGE.md).
+
+  Loaded full-screen by the native iOS / Android / React Native wrapper SDKs.
+  The page posts a `ready` event, the native side injects the flow config via
+  `window.IappEkycHost.start(configJson)` (never through the URL), and every
+  subsequent event (`state` / `result` / `error` / `cancelled`) is posted back
+  as a JSON *string* over the first available native bridge.
+
+  Deployment: copy this file and web/dist/ekyc-sdk.umd.js side by side
+  (production: https://iapp.co.th/sdk/webview.html + /sdk/ekyc-sdk.umd.js).
+
+  Plain ES5 on purpose — this file must parse even in outdated Android
+  System WebViews so the ENGINE_LOAD_FAILED / INSECURE_CONTEXT errors can
+  still reach the native side.
+-->
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0c4a6e; }
+  #mount { position: fixed; inset: 0; }
+  #loading {
+    position: fixed; inset: 0; display: flex; align-items: center;
+    justify-content: center; pointer-events: none;
+  }
+  #loading .spinner {
+    width: 44px; height: 44px; border-radius: 50%;
+    border: 4px solid rgba(255, 255, 255, 0.25); border-top-color: #fff;
+    animation: iapp-ekyc-spin 0.9s linear infinite;
+  }
+  @keyframes iapp-ekyc-spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="mount"></div>
+<div id="loading"><div class="spinner"></div></div>
+<script src="./ekyc-sdk.umd.js" onerror="window.__iappEkycEngineLoadError=true"></script>
+<script>
+(function () {
+  'use strict';
+
+  var PROTOCOL_VERSION = 1;
+  var HOST_PAGE_VERSION = 1;
+  /**
+   * Images above this base64 length are dropped from the result message
+   * (`imageOmitted: true`) to stay well under native IPC string limits.
+   * The 10 MB engine upload cap makes this unreachable in practice.
+   */
+  var MAX_IMAGE_BASE64_CHARS = 12000000;
+
+  /** Engine error `name` -> stable bridge code (docs/WEBVIEW_BRIDGE.md). */
+  var ERROR_CODE_BY_NAME = {
+    EkycError: 'UNKNOWN',
+    BadRequestError: 'BAD_REQUEST',
+    InvalidApiKeyError: 'INVALID_API_KEY',
+    InsufficientCreditError: 'INSUFFICIENT_CREDIT',
+    FileTooLargeError: 'FILE_TOO_LARGE',
+    RateLimitedError: 'RATE_LIMITED',
+    ServerError: 'SERVER_ERROR',
+    NetworkError: 'NETWORK_ERROR',
+    TimeoutError: 'TIMEOUT',
+    LivenessFailedError: 'LIVENESS_FAILED',
+    CameraError: 'CAMERA_NOT_FOUND',
+    CameraPermissionDeniedError: 'CAMERA_PERMISSION_DENIED',
+    CameraNotFoundError: 'CAMERA_NOT_FOUND',
+    InsecureContextError: 'INSECURE_CONTEXT'
+  };
+  // CancelledError is intentionally absent: it maps to the dedicated
+  // `cancelled` message type, not an `error`.
+
+  var VALID_FLOWS = { documentCapture: true, activeLiveness: true, faceCapture: true };
+  var started = false;
+
+  /** Serialize + send over the first available native bridge. */
+  function post(payload) {
+    payload.protocolVersion = PROTOCOL_VERSION;
+    var json = JSON.stringify(payload);
+    try {
+      if (window.webkit && window.webkit.messageHandlers &&
+          window.webkit.messageHandlers.iappEkyc) {
+        window.webkit.messageHandlers.iappEkyc.postMessage(json);
+        return;
+      }
+      if (window.IappEkycAndroid &&
+          typeof window.IappEkycAndroid.postMessage === 'function') {
+        window.IappEkycAndroid.postMessage(json);
+        return;
+      }
+      if (window.ReactNativeWebView &&
+          typeof window.ReactNativeWebView.postMessage === 'function') {
+        window.ReactNativeWebView.postMessage(json);
+        return;
+      }
+      if (window.parent && window.parent !== window) {
+        // Dev fallback: iframe testing from a browser page.
+        window.parent.postMessage(json, '*');
+        return;
+      }
+      if (window.console && window.console.log) {
+        window.console.log('[iapp-ekyc-host]', json);
+      }
+    } catch (e) {
+      if (window.console && window.console.error) {
+        window.console.error('[iapp-ekyc-host] bridge post failed', e);
+      }
+    }
+  }
+
+  /** Host-level failure (no engine error object involved). */
+  function postHostError(code, message) {
+    post({
+      type: 'error',
+      error: { code: code, statusCode: null, messageKey: 'error_generic', message: message }
+    });
+  }
+
+  /** Map an engine rejection to a bridge `error` (or `cancelled`) message. */
+  function postEngineError(err) {
+    var name = err && err.name ? String(err.name) : '';
+    if (name === 'CancelledError') {
+      post({ type: 'cancelled' });
+      return;
+    }
+    var error = {
+      code: ERROR_CODE_BY_NAME[name] || 'UNKNOWN',
+      statusCode: err && typeof err.statusCode === 'number' ? err.statusCode : null,
+      messageKey: err && err.userMessageKey ? String(err.userMessageKey) : 'error_generic',
+      message: err && err.message ? String(err.message) : String(err)
+    };
+    if (name === 'RateLimitedError') {
+      error.retryAfterSeconds =
+        err && typeof err.retryAfterSeconds === 'number' ? err.retryAfterSeconds : null;
+    }
+    if (name === 'LivenessFailedError') {
+      error.reason = err && err.reason ? String(err.reason) : null;
+    }
+    post({ type: 'error', error: error });
+  }
+
+  /** Blob -> { base64, mimeType, byteLength } (null + omitted=true when too big). */
+  function blobToPayload(blob, cb) {
+    if (!blob) {
+      cb(null, false);
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var dataUrl = String(reader.result || '');
+      var comma = dataUrl.indexOf(',');
+      var base64 = comma >= 0 ? dataUrl.slice(comma + 1) : '';
+      if (!base64 || base64.length > MAX_IMAGE_BASE64_CHARS) {
+        cb(null, true);
+        return;
+      }
+      cb({
+        base64: base64,
+        mimeType: blob.type || 'image/jpeg',
+        byteLength: blob.size
+      }, false);
+    };
+    reader.onerror = function () { cb(null, true); };
+    reader.readAsDataURL(blob);
+  }
+
+  function hideSpinner() {
+    var loading = document.getElementById('loading');
+    if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+  }
+
+  function postResult(flow, result, imageOmitted) {
+    if (imageOmitted) result.imageOmitted = true;
+    post({ type: 'result', flow: flow, result: result });
+  }
+
+  function runDocumentCapture(ekyc, mount, config, includeImages) {
+    return ekyc.captureDocument({
+      mount: mount,
+      documentType: config.documentType,
+      cameraFacing: config.cameraFacing || undefined,
+      onState: function (state, info) {
+        post({
+          type: 'state', flow: 'documentCapture', state: String(state),
+          messageKey: info && info.messageKey ? String(info.messageKey) : ''
+        });
+      }
+    }).then(function (res) {
+      blobToPayload(includeImages ? res.capturedImage : null, function (image, omitted) {
+        postResult('documentCapture', {
+          flow: 'documentCapture',
+          documentType: res.documentType,
+          raw: res.raw,
+          capturedImage: image
+        }, includeImages && omitted);
+      });
+    });
+  }
+
+  function runActiveLiveness(ekyc, mount, config, includeImages) {
+    return ekyc.startActiveLiveness({
+      mount: mount,
+      onState: function (info) {
+        post({
+          type: 'state', flow: 'activeLiveness',
+          state: info && info.phase ? String(info.phase) : '',
+          messageKey: info && info.messageKey ? String(info.messageKey) : '',
+          detail: {
+            phase: info ? info.phase : undefined,
+            challenge: info ? info.challenge : undefined,
+            challengeIndex: info ? info.challengeIndex : undefined,
+            challengeCount: info ? info.challengeCount : undefined
+          }
+        });
+      }
+    }).then(function (res) {
+      blobToPayload(includeImages ? res.selfieImage : null, function (image, omitted) {
+        postResult('activeLiveness', {
+          flow: 'activeLiveness',
+          raw: res.raw,
+          verdict: res.verdict,
+          passed: !!(res.verdict && res.verdict.passed),
+          signature: res.signature,
+          signatureAlg: res.signatureAlg,
+          processTime: typeof res.processTime === 'number' ? res.processTime : null,
+          selfieImage: image
+        }, includeImages && omitted);
+      });
+    });
+  }
+
+  function runFaceCapture(ekyc, mount) {
+    return ekyc.captureFace({
+      mount: mount,
+      onState: function (state, info) {
+        post({
+          type: 'state', flow: 'faceCapture', state: String(state),
+          messageKey: info && info.messageKey ? String(info.messageKey) : ''
+        });
+      }
+    }).then(function (blob) {
+      blobToPayload(blob, function (image, omitted) {
+        postResult('faceCapture', { flow: 'faceCapture', image: image }, omitted);
+      });
+    });
+  }
+
+  window.IappEkycHost = {
+    version: HOST_PAGE_VERSION,
+
+    /**
+     * One-shot flow entry point, called by the native wrapper after `ready`.
+     * `config` is a JSON string (or object): see docs/WEBVIEW_BRIDGE.md.
+     * The API key travels only through this call — never in the URL.
+     */
+    start: function (config) {
+      if (typeof config === 'string') {
+        try {
+          config = JSON.parse(config);
+        } catch (e) {
+          postHostError('INVALID_CONFIG', 'Config is not valid JSON');
+          return;
+        }
+      }
+      if (started) {
+        postHostError('INVALID_STATE',
+          'start() already called — reload the page for a new flow');
+        return;
+      }
+      started = true;
+
+      if (!window.IappEkyc || !window.IappEkyc.IappEkyc) {
+        postHostError('ENGINE_LOAD_FAILED', 'eKYC engine (ekyc-sdk.umd.js) failed to load');
+        return;
+      }
+      if (!window.isSecureContext) {
+        postHostError('INSECURE_CONTEXT',
+          'Camera access requires a secure context (HTTPS)');
+        return;
+      }
+      if (!config || !VALID_FLOWS[config.flow]) {
+        postHostError('INVALID_CONFIG',
+          'flow must be documentCapture | activeLiveness | faceCapture');
+        return;
+      }
+      if (config.flow === 'documentCapture' && !config.documentType) {
+        postHostError('INVALID_CONFIG', 'documentType is required for documentCapture');
+        return;
+      }
+
+      var ekyc;
+      try {
+        ekyc = new window.IappEkyc.IappEkyc({
+          apiKey: typeof config.apiKey === 'string' ? config.apiKey : '',
+          baseUrl: config.baseUrl || undefined,
+          timeoutMs: typeof config.timeoutMs === 'number' ? config.timeoutMs : undefined,
+          locale: config.locale || undefined,
+          theme: config.theme || undefined,
+          integration: config.integration || undefined
+        });
+      } catch (e) {
+        postHostError('INVALID_CONFIG', 'Engine rejected the config: ' + (e && e.message));
+        return;
+      }
+
+      hideSpinner();
+      var mount = document.getElementById('mount');
+      // Include captured/selfie images in the result unless explicitly off.
+      var includeImages = config.returnSelfieImage !== false;
+
+      var run =
+        config.flow === 'documentCapture' ? runDocumentCapture(ekyc, mount, config, includeImages) :
+        config.flow === 'activeLiveness' ? runActiveLiveness(ekyc, mount, config, includeImages) :
+        runFaceCapture(ekyc, mount);
+      run['catch'](postEngineError);
+    }
+  };
+
+  // Handshake: the native side waits for `ready` before injecting config.
+  if (window.__iappEkycEngineLoadError || !window.IappEkyc || !window.IappEkyc.IappEkyc) {
+    postHostError('ENGINE_LOAD_FAILED', 'eKYC engine (ekyc-sdk.umd.js) failed to load');
+  } else {
+    post({
+      type: 'ready',
+      hostPageVersion: HOST_PAGE_VERSION,
+      engineVersion: window.IappEkyc.SDK_VERSION || null,
+      secureContext: !!window.isSecureContext
+    });
+  }
+})();
+</script>
+</body>
+</html>

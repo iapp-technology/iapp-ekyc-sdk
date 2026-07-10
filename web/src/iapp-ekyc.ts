@@ -19,6 +19,7 @@ import type {
   DocumentResult,
   FaceVerificationResult,
   PassiveLivenessResult,
+  SdkIntegration,
 } from './core/types';
 import {
   ActiveLivenessFlow,
@@ -37,6 +38,11 @@ export interface IappEkycOptions extends EkycApiClientOptions {
   locale?: Locale;
   /** Default theme overrides for flows started from this instance. */
   theme?: Partial<EkycTheme>;
+  /**
+   * Wrapper SDK identity (native iOS/Android/React Native shells,
+   * docs/WEBVIEW_BRIDGE.md) reported in the challenge log `sdk` block.
+   */
+  integration?: SdkIntegration;
 }
 
 export class IappEkyc {
@@ -47,12 +53,14 @@ export class IappEkyc {
 
   private readonly defaultLocale?: Locale;
   private readonly defaultTheme?: Partial<EkycTheme>;
+  private readonly defaultIntegration?: SdkIntegration;
 
   constructor(options: IappEkycOptions) {
     this.api = new EkycApiClient(options);
     this.face = new FaceApi(this.api);
     this.defaultLocale = options.locale;
     this.defaultTheme = options.theme;
+    this.defaultIntegration = options.integration;
   }
 
   /** Run the interactive document auto-capture flow. */
@@ -69,6 +77,7 @@ export class IappEkyc {
     return new ActiveLivenessFlow(this.api).start({
       locale: this.defaultLocale,
       theme: this.defaultTheme,
+      integration: this.defaultIntegration,
       ...options,
     });
   }

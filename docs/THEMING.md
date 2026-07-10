@@ -1,6 +1,6 @@
 # Theming
 
-Both packages ship the same **light-blue default theme** and accept full
+All packages ship the same **light-blue default theme** and accept full
 overrides. Token names and default values are identical across platforms.
 
 | Token | Default | Used for |
@@ -47,3 +47,29 @@ new IappEkyc({ apiKey, theme: { primary: '#113F7B', borderRadius: 12 } });
 ```
 
 Every visual element in the overlay uses only `--iapp-ekyc-*` variables.
+
+## iOS (Swift / Objective-C)
+
+The native wrappers forward tokens to the engine over the WebView bridge
+(docs/WEBVIEW_BRIDGE.md) — same names, same defaults:
+
+```swift
+let theme = IappEkycTheme()
+theme.primary = "#113F7B"
+theme.borderRadius = 12
+config.theme = theme
+```
+
+## Android (Kotlin / Java)
+
+```kotlin
+val config = IappEkycConfig.Builder("YOUR_API_KEY")
+    .theme(IappEkycTheme.Builder().primary("#113F7B").borderRadius(12).build())
+    .build()
+```
+
+## React Native
+
+```tsx
+<IappEkycFlow theme={{ primary: '#113F7B', borderRadius: 12 }} ... />
+```

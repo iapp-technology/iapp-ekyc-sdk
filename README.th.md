@@ -5,8 +5,14 @@
 ชุดพัฒนาซอฟต์แวร์ (SDK) แบบโอเพนซอร์สสำหรับบริการ eKYC ระดับองค์กรของ
 [บริษัท ไอแอพพ์เทคโนโลยี จำกัด](https://iapp.co.th) — ถ่ายภาพบัตรประชาชน/
 หนังสือเดินทางอัตโนมัติ ตรวจสอบการมีชีวิตแบบแอ็กทีฟ (Active Liveness)
-เปรียบเทียบใบหน้า และตรวจจับภาพปลอม — รองรับทั้ง **Flutter (Android/iOS)**
-และ **เว็บ (HTML5/JavaScript)**
+เปรียบเทียบใบหน้า และตรวจจับภาพปลอม — รองรับ **เว็บ (HTML5/JavaScript)**,
+**Flutter (Android/iOS)**, **iOS เนทีฟ (Swift/Objective-C)**,
+**Android เนทีฟ (Kotlin/Java)** และ **React Native**
+
+แพ็กเกจเว็บและ Flutter ประมวลผลบนอุปกรณ์โดยตรง ส่วนแพ็กเกจ iOS, Android
+และ React Native เป็นเชลล์เนทีฟขนาดเบาที่เรียกใช้เอนจินเว็บตัวเดียวกัน
+ผ่านหน้า WebView ที่โฮสต์ไว้ — คุณภาพการถ่ายภาพเหมือนกันทุกแพลตฟอร์ม
+โดยแทบไม่เพิ่มขนาดแอป ([docs/WEBVIEW_BRIDGE.md](docs/WEBVIEW_BRIDGE.md))
 
 SDK ใช้งานได้ฟรี (สัญญาอนุญาต Apache-2.0) โดยคิดค่าบริการเฉพาะการเรียกใช้
 API ตามจำนวนครั้งผ่านคีย์ API ของท่าน —
@@ -75,11 +81,90 @@ const result = await ekyc.captureDocument({
 });
 ```
 
+## เริ่มต้นใช้งาน — iOS (Swift / Objective-C)
+
+ใน Xcode เลือก **File → Add Package Dependencies…** →
+`https://github.com/iapp-technology/iapp-ekyc-sdk` (product **IappEkyc**)
+และเพิ่ม `NSCameraUsageDescription` ใน Info.plist:
+
+```swift
+import IappEkyc
+
+let config = IappEkycConfig(apiKey: "YOUR_API_KEY", flow: .documentCapture)
+config.documentType = .thaiIdFront
+config.locale = .th
+
+IappEkycSdk.present(from: self, config: config) { result in
+    if case .success(let outcome) = result {
+        print(outcome.document?.rawJSON ?? [:])
+    }
+}
+```
+
+รองรับ Objective-C เต็มรูปแบบ — ดู [ios/README.md](ios/README.md)
+
+## เริ่มต้นใช้งาน — Android (Kotlin / Java)
+
+```kotlin
+// settings.gradle.kts: repositories { maven("https://jitpack.io") }
+// app/build.gradle.kts:
+dependencies { implementation("com.github.iapp-technology:iapp-ekyc-sdk:v0.2.0") }
+```
+
+```kotlin
+val config = IappEkycConfig.Builder("YOUR_API_KEY").locale(EkycLocale.TH).build()
+
+private val ekyc = registerForActivityResult(IappEkycContract()) { result ->
+    when (result) {
+        is IappEkycResult.DocumentCaptured -> handleOcr(result.rawJson)
+        is IappEkycResult.Failed -> show(result.error)
+        else -> {}
+    }
+}
+ekyc.launch(IappEkycRequest.DocumentCapture(config, EkycDocumentType.THAI_ID_FRONT))
+```
+
+รองรับ Java เต็มรูปแบบ (API แบบ callback ผ่าน `IappEkyc.start(...)`) — ดู
+[android/README.md](android/README.md)
+
+## เริ่มต้นใช้งาน — React Native
+
+```bash
+git clone https://github.com/iapp-technology/iapp-ekyc-sdk
+npm install ./iapp-ekyc-sdk/react-native react-native-webview
+```
+
+```tsx
+import { IappEkycFlow } from '@iapp-technology/react-native-ekyc-sdk';
+
+<Modal visible={active} presentationStyle="fullScreen">
+  <IappEkycFlow
+    flow="documentCapture"
+    documentType="thaiIdFront"
+    apiKey="YOUR_API_KEY"
+    locale="th"
+    onResult={(r) => { setActive(false); console.log(r); }}
+    onError={(e) => setActive(false)}
+    onCancel={() => setActive(false)}
+  />
+</Modal>
+```
+
+ดูการตั้งค่าสิทธิ์กล้องที่ [react-native/README.md](react-native/README.md)
+
 ## ข้อกำหนดของระบบ
 
 - **Flutter**: ≥ 3.32 / Dart ≥ 3.8 · Android minSdk 24 · iOS 15.5 ขึ้นไป
 - **เว็บ**: เบราว์เซอร์ที่รองรับ WebAssembly และ `getUserMedia`
   (ต้องใช้ HTTPS หรือ localhost)
+- **iOS (เนทีฟ)**: iOS 15 ขึ้นไป · Swift Package Manager ·
+  ต้องมี `NSCameraUsageDescription`
+- **Android (เนทีฟ)**: minSdk 24 · Android System WebView เวอร์ชันล่าสุด
+  (แนะนำ Chrome/WebView ≥ 100)
+- **React Native**: RN ≥ 0.72 · `react-native-webview` ≥ 13.6
+- เชลล์เนทีฟ iOS / Android / React Native ต้องเชื่อมต่ออินเทอร์เน็ตไปยัง
+  `https://iapp.co.th/sdk/webview.html` ขณะใช้งาน
+  (บริการ eKYC ต้องใช้อินเทอร์เน็ตในการเรียก API อยู่แล้ว)
 
 ## ข้อควรระวังด้านความปลอดภัย
 

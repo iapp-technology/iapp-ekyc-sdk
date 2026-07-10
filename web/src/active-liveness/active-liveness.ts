@@ -14,8 +14,8 @@ import { CameraController } from '../core/camera';
 import { CancelledError, EkycError, LivenessFailedError } from '../core/errors';
 import { createTranslator, type Locale, type Translator } from '../core/i18n/i18n';
 import { applyTheme, type EkycTheme } from '../core/theme';
-import type { ActiveLivenessResult } from '../core/types';
-import { SDK_NAME, SDK_VERSION } from '../version';
+import type { ActiveLivenessResult, SdkIntegration } from '../core/types';
+import { resolveSdkIdentity } from '../version';
 import {
   buildOverlay,
   computeOvalGuide,
@@ -72,6 +72,8 @@ export interface ActiveLivenessStartOptions {
   machineConfig?: Partial<ChallengeMachineConfig>;
   /** Debug hook: fires for every processed frame with the raw observation. */
   onObservation?: (obs: FaceObservation) => void;
+  /** Wrapper SDK identity for the challenge log (docs/WEBVIEW_BRIDGE.md). */
+  integration?: SdkIntegration;
 }
 
 export class ActiveLivenessFlow {
@@ -335,11 +337,7 @@ class LivenessSession {
         ),
       );
       this.machine.markFinalizing();
-      const log = this.machine.buildChallengeLog({
-        name: SDK_NAME,
-        version: SDK_VERSION,
-        platform: 'web',
-      });
+      const log = this.machine.buildChallengeLog(resolveSdkIdentity(this.options.integration));
       // Network/server failure => failed(finalizeError); NEVER retried
       // (billable request, docs/API_CONTRACTS.md).
       const result = await this.api.finalizeActiveLiveness(selfie, log, {

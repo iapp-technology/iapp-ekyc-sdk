@@ -4,8 +4,16 @@
 
 Free, open-source client SDKs for [iApp Technology](https://iapp.co.th)'s
 enterprise eKYC APIs — automatic Thai ID card / passport capture, face
-active liveness, face verification, and passive liveness — for **Flutter
-(Android/iOS)** and **Web (HTML5/JavaScript)**.
+active liveness, face verification, and passive liveness — for **Web
+(HTML5/JavaScript)**, **Flutter (Android/iOS)**, **native iOS
+(Swift/Objective-C)**, **native Android (Kotlin/Java)**, and
+**React Native**.
+
+The Web and Flutter packages run the capture engine directly on-device.
+The iOS, Android, and React Native packages are thin native shells around
+the same production web engine via a hosted WebView bridge page — identical
+capture quality on every platform, ~zero added binary size
+([docs/WEBVIEW_BRIDGE.md](docs/WEBVIEW_BRIDGE.md)).
 
 The SDKs are free (Apache-2.0). API calls are billed per request to your
 iApp API key — [get a key here](https://iapp.co.th/control/api-keys).
@@ -80,6 +88,77 @@ const liveness = await ekyc.startActiveLiveness({
 Or via `<script>` tag (UMD): the global `window.IappEkyc` is a namespace —
 instantiate with `new window.IappEkyc.IappEkyc({ apiKey })`.
 
+## Quick start — iOS (Swift / Objective-C)
+
+Xcode → **File → Add Package Dependencies…** →
+`https://github.com/iapp-technology/iapp-ekyc-sdk` (product **IappEkyc**),
+then add `NSCameraUsageDescription` to Info.plist:
+
+```swift
+import IappEkyc
+
+let config = IappEkycConfig(apiKey: "YOUR_API_KEY", flow: .documentCapture)
+config.documentType = .thaiIdFront
+config.locale = .th
+
+IappEkycSdk.present(from: self, config: config) { result in
+    if case .success(let outcome) = result {
+        print(outcome.document?.rawJSON ?? [:])
+    }
+}
+```
+
+Objective-C is fully supported — see [ios/README.md](ios/README.md).
+
+## Quick start — Android (Kotlin / Java)
+
+```kotlin
+// settings.gradle.kts: repositories { maven("https://jitpack.io") }
+// app/build.gradle.kts:
+dependencies { implementation("com.github.iapp-technology:iapp-ekyc-sdk:v0.2.0") }
+```
+
+```kotlin
+val config = IappEkycConfig.Builder("YOUR_API_KEY").locale(EkycLocale.TH).build()
+
+private val ekyc = registerForActivityResult(IappEkycContract()) { result ->
+    when (result) {
+        is IappEkycResult.DocumentCaptured -> handleOcr(result.rawJson)
+        is IappEkycResult.Failed -> show(result.error)
+        else -> {}
+    }
+}
+ekyc.launch(IappEkycRequest.DocumentCapture(config, EkycDocumentType.THAI_ID_FRONT))
+```
+
+Java is fully supported (`IappEkyc.start(...)` callback API) — see
+[android/README.md](android/README.md).
+
+## Quick start — React Native
+
+```bash
+git clone https://github.com/iapp-technology/iapp-ekyc-sdk
+npm install ./iapp-ekyc-sdk/react-native react-native-webview
+```
+
+```tsx
+import { IappEkycFlow } from '@iapp-technology/react-native-ekyc-sdk';
+
+<Modal visible={active} presentationStyle="fullScreen">
+  <IappEkycFlow
+    flow="documentCapture"
+    documentType="thaiIdFront"
+    apiKey="YOUR_API_KEY"
+    locale="th"
+    onResult={(r) => { setActive(false); console.log(r); }}
+    onError={(e) => setActive(false)}
+    onCancel={() => setActive(false)}
+  />
+</Modal>
+```
+
+See [react-native/README.md](react-native/README.md) for permission setup.
+
 ## Requirements
 
 - **Flutter**: ≥ 3.32 / Dart ≥ 3.8 · Android minSdk 24 · iOS 15.5+
@@ -87,6 +166,13 @@ instantiate with `new window.IappEkyc.IappEkyc({ apiKey })`.
 - **Web**: modern browsers with WebAssembly + `getUserMedia`
   (HTTPS or localhost required). OpenCV/MediaPipe assets are lazy-loaded
   only when a capture flow starts.
+- **iOS (native)**: iOS 15+ · Swift Package Manager · `NSCameraUsageDescription`
+- **Android (native)**: minSdk 24 · up-to-date Android System WebView
+  (Chrome/WebView ≥ 100 recommended)
+- **React Native**: RN ≥ 0.72 · `react-native-webview` ≥ 13.6
+- The native iOS / Android / React Native shells need internet access to
+  `https://iapp.co.th/sdk/webview.html` at runtime (eKYC always needs
+  connectivity for the API calls anyway).
 
 ## Documentation
 
@@ -94,6 +180,7 @@ instantiate with `new window.IappEkyc.IappEkyc({ apiKey })`.
   [Algorithm spec](docs/ALGORITHM.md) ·
   [Active liveness spec](docs/ACTIVE_LIVENESS.md) ·
   [API contracts](docs/API_CONTRACTS.md) ·
+  [WebView bridge](docs/WEBVIEW_BRIDGE.md) ·
   [Theming](docs/THEMING.md) ·
   [Security](docs/SECURITY.md)
 

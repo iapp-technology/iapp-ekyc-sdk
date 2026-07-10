@@ -34,3 +34,14 @@ web/coverage/
 # Logs
 *.log
 npm-debug.log*
+
+# React Native (compiled output)
+react-native/lib/
+
+# Gradle (root library build + android/example)
+.gradle/
+local.properties
+
+# Swift Package Manager
+.build/
+.swiftpm/

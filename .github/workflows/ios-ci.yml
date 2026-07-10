@@ -1,0 +1,23 @@
+name: iOS CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**', 'Package.swift', '.github/workflows/ios-ci.yml']
+  pull_request:
+    paths: ['ios/**', 'Package.swift', '.github/workflows/ios-ci.yml']
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift package dump-package > /dev/null
+      - name: Build (iOS Simulator)
+        run: |
+          xcodebuild -scheme IappEkyc \
+            -destination 'generic/platform=iOS Simulator' build
+      - name: Test (iOS Simulator)
+        run: |
+          xcodebuild -scheme IappEkyc \
+            -destination 'platform=iOS Simulator,name=iPhone 16' test

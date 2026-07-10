@@ -23,6 +23,13 @@ tools). Recommendations, in order of preference:
 3. Never commit keys to source control. Use `--dart-define` /
    environment injection at build time.
 
+**Native iOS / Android / React Native wrappers:** keys compiled into an
+IPA/APK are just as extractable — prefer proxy mode (`apiKey: ""` +
+`baseUrl`) there too. The wrappers inject the key into the hosted bridge
+page via `IappEkycHost.start(...)` **after** the page loads; it never
+appears in the page URL, browser history, or Referer headers
+(docs/WEBVIEW_BRIDGE.md).
+
 ## Active liveness verdicts
 
 Only the **signed verdict returned by the finalize endpoint** proves
