@@ -3,6 +3,14 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.1] — 2026-07-13
+
+### Changed
+- **`@iapp-technology/ekyc-sdk`**: added a package `README.md` so the npm
+  listing shows install/usage docs. Packaging-only patch — the engine is
+  unchanged (`SDK_VERSION` stays `0.2.0`, same as the hosted UMD and the
+  native wrappers).
+
 ## [0.2.0] — 2026-07-10
 
 ### Added

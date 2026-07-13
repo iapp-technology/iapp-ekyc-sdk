@@ -13,11 +13,8 @@ identically across platforms (docs/WEBVIEW_BRIDGE.md).
 
 ## Install
 
-Until the package is published to npm, install from a checkout:
-
 ```bash
-git clone https://github.com/iapp-technology/iapp-ekyc-sdk
-npm install ./iapp-ekyc-sdk/react-native react-native-webview
+npm install @iapp-technology/react-native-ekyc-sdk react-native-webview
 cd ios && pod install        # react-native-webview native module
 ```
 

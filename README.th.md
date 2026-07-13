@@ -2,6 +2,10 @@
 
 [English](README.md) | **ภาษาไทย** | [中文](README.zh.md)
 
+[![npm — @iapp-technology/ekyc-sdk](https://img.shields.io/npm/v/@iapp-technology/ekyc-sdk?logo=npm&color=0284C7&label=%40iapp-technology%2Fekyc-sdk)](https://www.npmjs.com/package/@iapp-technology/ekyc-sdk)
+[![npm — react-native-ekyc-sdk](https://img.shields.io/npm/v/@iapp-technology/react-native-ekyc-sdk?logo=npm&color=0284C7&label=react-native-ekyc-sdk)](https://www.npmjs.com/package/@iapp-technology/react-native-ekyc-sdk)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-0284C7)](LICENSE)
+
 ชุดพัฒนาซอฟต์แวร์ (SDK) แบบโอเพนซอร์สสำหรับบริการ eKYC ระดับองค์กรของ
 [บริษัท ไอแอพพ์เทคโนโลยี จำกัด](https://iapp.co.th) — ถ่ายภาพบัตรประชาชน/
 หนังสือเดินทางอัตโนมัติ ตรวจสอบการมีชีวิตแบบแอ็กทีฟ (Active Liveness)
@@ -130,8 +134,7 @@ ekyc.launch(IappEkycRequest.DocumentCapture(config, EkycDocumentType.THAI_ID_FRO
 ## เริ่มต้นใช้งาน — React Native
 
 ```bash
-git clone https://github.com/iapp-technology/iapp-ekyc-sdk
-npm install ./iapp-ekyc-sdk/react-native react-native-webview
+npm install @iapp-technology/react-native-ekyc-sdk react-native-webview
 ```
 
 ```tsx

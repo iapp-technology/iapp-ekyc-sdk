@@ -2,6 +2,10 @@
 
 **English** | [ภาษาไทย](README.th.md) | [中文](README.zh.md)
 
+[![npm — @iapp-technology/ekyc-sdk](https://img.shields.io/npm/v/@iapp-technology/ekyc-sdk?logo=npm&color=0284C7&label=%40iapp-technology%2Fekyc-sdk)](https://www.npmjs.com/package/@iapp-technology/ekyc-sdk)
+[![npm — react-native-ekyc-sdk](https://img.shields.io/npm/v/@iapp-technology/react-native-ekyc-sdk?logo=npm&color=0284C7&label=react-native-ekyc-sdk)](https://www.npmjs.com/package/@iapp-technology/react-native-ekyc-sdk)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-0284C7)](LICENSE)
+
 Free, open-source client SDKs for [iApp Technology](https://iapp.co.th)'s
 enterprise eKYC APIs — automatic Thai ID card / passport capture, face
 active liveness, face verification, and passive liveness — for **Web
@@ -137,8 +141,7 @@ Java is fully supported (`IappEkyc.start(...)` callback API) — see
 ## Quick start — React Native
 
 ```bash
-git clone https://github.com/iapp-technology/iapp-ekyc-sdk
-npm install ./iapp-ekyc-sdk/react-native react-native-webview
+npm install @iapp-technology/react-native-ekyc-sdk react-native-webview
 ```
 
 ```tsx
