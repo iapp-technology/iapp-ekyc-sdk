@@ -34,11 +34,55 @@
     animation: iapp-ekyc-spin 0.9s linear infinite;
   }
   @keyframes iapp-ekyc-spin { to { transform: rotate(360deg); } }
+
+  /* Shown only when the page is opened directly in a browser (no wrapper). */
+  #standalone {
+    position: fixed; inset: 0; display: none;
+    align-items: center; justify-content: center; padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, "Noto Sans Thai", sans-serif;
+  }
+  #standalone .card {
+    max-width: 460px; width: 100%; text-align: center;
+    background: #fff; border-radius: 18px; padding: 30px 26px;
+    box-shadow: 0 12px 40px rgba(12, 74, 110, 0.35);
+  }
+  #standalone .logo {
+    width: 56px; height: 56px; border-radius: 15px; margin: 0 auto 16px;
+    background: linear-gradient(120deg, #113f7b, #0284c7); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; font-weight: 700; letter-spacing: -1px;
+  }
+  #standalone h1 { margin: 0 0 6px; font-size: 20px; color: #0c4a6e; }
+  #standalone p { margin: 0 0 6px; font-size: 15px; line-height: 1.55; color: #334155; }
+  #standalone p.th { color: #64748b; font-size: 14.5px; }
+  #standalone .links { margin-top: 18px; display: flex; flex-wrap: wrap;
+    gap: 10px; justify-content: center; }
+  #standalone a {
+    display: inline-block; text-decoration: none; font-size: 14.5px;
+    font-weight: 600; padding: 9px 16px; border-radius: 10px;
+  }
+  #standalone a.primary { background: #0284c7; color: #fff; }
+  #standalone a.ghost { background: #f0f9ff; color: #0c4a6e; border: 1px solid #bae6fd; }
 </style>
 </head>
 <body>
 <div id="mount"></div>
 <div id="loading"><div class="spinner"></div></div>
+<div id="standalone">
+  <div class="card">
+    <div class="logo">iA</div>
+    <h1>iApp eKYC SDK</h1>
+    <p>This page is a component the iApp eKYC SDK loads inside a mobile or web
+      app. It is not meant to be opened directly in a browser.</p>
+    <p class="th">หน้านี้เป็นส่วนประกอบที่ SDK เรียกใช้ภายในแอปพลิเคชัน ไม่ได้ออกแบบมาให้เปิดตรงๆ ในเบราว์เซอร์</p>
+    <div class="links">
+      <a class="primary" href="https://iapp.co.th/ekyc-demo">Try the live demo</a>
+      <a class="ghost" href="https://iapp.co.th/docs/ekyc/sdk/getting-started">Documentation</a>
+      <a class="ghost" href="https://github.com/iapp-technology/iapp-ekyc-sdk">GitHub</a>
+    </div>
+  </div>
+</div>
 <script src="./ekyc-sdk.umd.js" onerror="window.__iappEkycEngineLoadError=true"></script>
 <script>
 (function () {
@@ -329,6 +373,27 @@
       engineVersion: window.IappEkyc.SDK_VERSION || null,
       secureContext: !!window.isSecureContext
     });
+  }
+
+  // Opened directly in a browser (no wrapper)? Every real iOS/Android/RN
+  // wrapper injects a native bridge object before load, so this is only true
+  // for a human opening the URL. Swap the endless spinner for an explanation
+  // if no host calls start() shortly after `ready`.
+  function hasNativeBridge() {
+    return !!(
+      (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.iappEkyc) ||
+      (window.IappEkycAndroid && typeof window.IappEkycAndroid.postMessage === 'function') ||
+      (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function')
+    );
+  }
+  if (!hasNativeBridge() && window.parent === window) {
+    setTimeout(function () {
+      if (started) return; // a host called start() — the real flow is running
+      var loading = document.getElementById('loading');
+      if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+      var info = document.getElementById('standalone');
+      if (info) info.style.display = 'flex';
+    }, 1500);
   }
 })();
 </script>
