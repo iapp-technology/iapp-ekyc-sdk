@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/iapp-technology/iapp-ekyc-sdk",
+    "url": "git+https://github.com/iapp-technology/iapp-ekyc-sdk.git",
     "directory": "web"
   },
   "homepage": "https://iapp.co.th/docs/category/-electronic-know-your-customer-e-kyc",
@@ -33,11 +33,15 @@
     "dist"
   ],
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "lint": "tsc --noEmit",
     "build": "vite build && node -e \"require('fs').copyFileSync('dist/ekyc-sdk.umd.cjs','dist/ekyc-sdk.umd.js')\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.35",

@@ -10,6 +10,9 @@
     "src",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "lint": "tsc --noEmit",
@@ -17,7 +20,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/iapp-technology/iapp-ekyc-sdk.git",
+    "url": "git+https://github.com/iapp-technology/iapp-ekyc-sdk.git",
     "directory": "react-native"
   },
   "homepage": "https://iapp.co.th/docs/category/-electronic-know-your-customer-e-kyc",
