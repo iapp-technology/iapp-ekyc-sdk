@@ -3,6 +3,20 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.6] — 2026-08-26
+
+### Added
+- **Fault-injection hook for the GPU-garbage device class**: setting
+  `window.__iappEkycSimulateBrokenGpu = true` before a flow starts makes
+  every GPU-path landmarker return the exact garbage the field device
+  produces (two landmark sets at ~1e12 coordinates) while the CPU delegate
+  stays real. Inert unless the flag is set. This allowed the whole recovery
+  chain to be verified end to end in a real browser with a fake camera fed
+  by the field device's own screen recording: first session recovers to CPU
+  and reaches the challenge phase in 7.7 s and persists the pin; the next
+  session starts pinned and reaches it in 2.9 s; a healthy control run is
+  unaffected and sets no pin.
+
 ## [web 0.2.5] — 2026-08-26
 
 ### Fixed

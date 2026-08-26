@@ -60,6 +60,26 @@ describe('loadFaceLandmarker', () => {
     expect(created.map(delegateOf)).toEqual(['CPU']);
   });
 
+  it('__iappEkycSimulateBrokenGpu corrupts GPU output, leaves CPU real', async () => {
+    (globalThis as { __iappEkycSimulateBrokenGpu?: boolean }).__iappEkycSimulateBrokenGpu = true;
+    try {
+      const gpu = await loadFaceLandmarker();
+      const out = gpu.detectForVideo(null as unknown as HTMLVideoElement, 0) as {
+        faceLandmarks: Array<Array<{ x: number }>>;
+      };
+      expect(out.faceLandmarks).toHaveLength(2);
+      expect(Math.abs(out.faceLandmarks[0][0].x)).toBeGreaterThan(1e11);
+      const cpu = await loadFaceLandmarker({ delegate: 'CPU' });
+      const real = cpu.detectForVideo(null as unknown as HTMLVideoElement, 0) as Record<
+        string,
+        unknown
+      >;
+      expect(real.faceLandmarks).toBeUndefined(); // the stub's passthrough result
+    } finally {
+      delete (globalThis as { __iappEkycSimulateBrokenGpu?: boolean }).__iappEkycSimulateBrokenGpu;
+    }
+  });
+
   it('tracks 2 faces so a second person can be seen', async () => {
     await loadFaceLandmarker();
     expect(created[0].numFaces).toBe(2);

@@ -100,6 +100,47 @@ export function loadFaceLandmarker(
   return promise;
 }
 
+/**
+ * Support / verification hook: when a page sets
+ * `window.__iappEkycSimulateBrokenGpu = true` BEFORE a flow starts, every
+ * landmarker created on the GPU (or auto) path returns the garbage this
+ * fault produces in the field — two landmark sets with ~1e12 coordinates,
+ * matching the Galaxy S25 Ultra report of Aug 2026 — while the CPU delegate
+ * stays real. This lets the unusable-output recovery be exercised end to
+ * end on any machine (desktop Chrome with a fake camera, an Android
+ * emulator, the hosted demo via the devtools console) without needing a
+ * device that is actually faulty. Inert unless the flag is set.
+ */
+function withSimulatedGpuFault(
+  instance: FaceLandmarkerLike,
+  delegate: 'GPU' | 'CPU',
+): FaceLandmarkerLike {
+  const flagged =
+    (globalThis as { __iappEkycSimulateBrokenGpu?: boolean })
+      .__iappEkycSimulateBrokenGpu === true;
+  if (!flagged || delegate === 'CPU') return instance;
+  const junk = (offsetX: number) => {
+    const S = 1e12;
+    return [
+      { x: -0.6 * S + offsetX, y: -0.28 * S, z: 0 },
+      { x: 0.77 * S + offsetX, y: -0.28 * S, z: 0 },
+      { x: 0.77 * S + offsetX, y: 0.51 * S, z: 0 },
+      { x: -0.6 * S + offsetX, y: 0.51 * S, z: 0 },
+    ];
+  };
+  return {
+    detectForVideo(video: HTMLVideoElement, ts: number) {
+      instance.detectForVideo(video, ts); // keep the real per-frame cost
+      return {
+        faceLandmarks: [junk(0), junk(2e11)],
+        faceBlendshapes: [{ categories: [] }, { categories: [] }],
+        facialTransformationMatrixes: [],
+      };
+    },
+    close: () => instance.close(),
+  };
+}
+
 async function doLoad(options: LoadFaceLandmarkerOptions): Promise<FaceLandmarkerLike> {
   const mod = await loadTasksVisionModule(options.assetBaseUrl);
   const wasmBase = options.assetBaseUrl
@@ -119,21 +160,30 @@ async function doLoad(options: LoadFaceLandmarkerOptions): Promise<FaceLandmarke
   });
 
   if (options.delegate) {
-    return (await mod.FaceLandmarker.createFromOptions(
-      fileset,
-      baseOptions(options.delegate),
-    )) as FaceLandmarkerLike;
+    return withSimulatedGpuFault(
+      (await mod.FaceLandmarker.createFromOptions(
+        fileset,
+        baseOptions(options.delegate),
+      )) as FaceLandmarkerLike,
+      options.delegate,
+    );
   }
   try {
-    return (await mod.FaceLandmarker.createFromOptions(
-      fileset,
-      baseOptions('GPU'),
-    )) as FaceLandmarkerLike;
+    return withSimulatedGpuFault(
+      (await mod.FaceLandmarker.createFromOptions(
+        fileset,
+        baseOptions('GPU'),
+      )) as FaceLandmarkerLike,
+      'GPU',
+    );
   } catch {
-    return (await mod.FaceLandmarker.createFromOptions(
-      fileset,
-      baseOptions('CPU'),
-    )) as FaceLandmarkerLike;
+    return withSimulatedGpuFault(
+      (await mod.FaceLandmarker.createFromOptions(
+        fileset,
+        baseOptions('CPU'),
+      )) as FaceLandmarkerLike,
+      'CPU',
+    );
   }
 }
 
