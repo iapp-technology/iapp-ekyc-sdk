@@ -187,6 +187,20 @@ describe('mapObservation', () => {
     expect(obs.leftEyeOpen).toBe(0);
   });
 
+  it('tolerates a result with no blendshapes or matrices', () => {
+    // A detector returning landmarks but neither auxiliary array used to
+    // throw on every frame, freezing the flow with no error.
+    const base = fakeResult();
+    const obs = mapObservation(
+      { faceLandmarks: base.faceLandmarks } as unknown as FaceLandmarkerResultLike,
+      opts,
+    );
+    expect(obs.count).toBe(1);
+    expect(obs.yawDeg).toBe(0);
+    expect(obs.leftEyeOpen).toBe(1);
+    expect(obs.faceWidthFrac).toBeCloseTo(0.4, 6);
+  });
+
   it('reports count for multi-face frames', () => {
     const base = fakeResult();
     const obs = mapObservation(

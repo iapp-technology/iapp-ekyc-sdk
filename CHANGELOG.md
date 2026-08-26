@@ -3,6 +3,24 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.3] — 2026-08-26
+
+### Fixed
+- `mapObservation()` threw on every frame if a detector returned landmarks
+  without the `faceBlendshapes` / `facialTransformationMatrixes` arrays. An
+  exception inside the render loop freezes the UI on whatever message it
+  last showed, with nothing surfaced to the host app — the hardest possible
+  failure to diagnose from the outside. Both reads are now optional-chained
+  on the array itself.
+
+### Added
+- `facecheck.html` now runs the same gate the `findFace` phase applies and
+  reports which step blocks the flow (no face / more than one person / face
+  too small / face off centre), the measured `faceWidthFrac` and centre
+  offset per frame, and the min/median/max offset against the 0.12
+  threshold. A single report from a misbehaving device now identifies the
+  blocking step instead of narrowing it to two candidates.
+
 ## [web 0.2.2 / flutter 0.1.1] — 2026-08-26
 
 ### Fixed

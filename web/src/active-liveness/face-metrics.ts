@@ -270,7 +270,11 @@ export function mapObservation(
   // Blendshapes and the transformation matrix are indexed in lockstep with
   // faceLandmarks, so every per-face read uses the SUBJECT's index — never
   // slot 0, which a phantom detection can occupy.
-  const matrix = result.facialTransformationMatrixes[selection.index];
+  // Optional chaining on the ARRAYS, not just the element: a detector that
+  // returns landmarks without blendshapes or matrices would otherwise throw
+  // here on every frame, and an exception inside the render loop freezes the
+  // UI on its last message with no error surfaced to the host app.
+  const matrix = result.facialTransformationMatrixes?.[selection.index];
   if (matrix && matrix.data.length >= 16) {
     const euler = eulerFromMatrix(matrix.data);
     yawDeg = euler.yawDeg;
@@ -278,7 +282,7 @@ export function mapObservation(
     rollDeg = euler.rollDeg;
   }
 
-  const categories = result.faceBlendshapes[selection.index]?.categories;
+  const categories = result.faceBlendshapes?.[selection.index]?.categories;
   const leftEyeOpen = 1 - blendshapeScore(categories, 'eyeBlinkLeft');
   const rightEyeOpen = 1 - blendshapeScore(categories, 'eyeBlinkRight');
   const smile = Math.max(
