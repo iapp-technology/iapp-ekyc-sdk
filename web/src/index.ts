@@ -26,6 +26,7 @@ export {
   CameraPermissionDeniedError,
   CameraNotFoundError,
   InsecureContextError,
+  FaceDetectorUnavailableError,
   errorFromResponse,
   type EkycErrorOptions,
 } from './core/errors';

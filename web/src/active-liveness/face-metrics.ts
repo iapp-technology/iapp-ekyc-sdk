@@ -136,6 +136,40 @@ export interface FaceSelection {
   count: number;
   /** Faces the detector reported, before filtering (diagnostics only). */
   rawCount: number;
+  /**
+   * Landmark sets discarded as numerically impossible (see
+   * `isPlausiblyNormalized`). `rejected > 0 && count === 0` means the
+   * detector is running but its output is unusable — the caller should
+   * rebuild it on another delegate rather than show the user a hint they
+   * cannot act on.
+   */
+  rejected: number;
+}
+
+/**
+ * MediaPipe landmarks are normalized to the frame: 0..1, give or take a
+ * little overshoot for a face at the very edge. A Galaxy S25 Ultra in the
+ * field (Aug 2026) returned coordinates around 1e12 — the model was
+ * running but its output was numerically garbage, which fed a face box of
+ * width 1.37e12 straight into the centring check and pinned the flow on
+ * "position your face inside the oval" forever.
+ *
+ * Bounds are deliberately generous: reject the impossible, not the merely
+ * off-frame.
+ */
+const MIN_PLAUSIBLE_COORD = -1;
+const MAX_PLAUSIBLE_COORD = 2;
+const MAX_PLAUSIBLE_SIZE = 2;
+
+function isPlausiblyNormalized(box: FaceBox): boolean {
+  return (
+    box.minX >= MIN_PLAUSIBLE_COORD &&
+    box.minY >= MIN_PLAUSIBLE_COORD &&
+    box.maxX <= MAX_PLAUSIBLE_COORD &&
+    box.maxY <= MAX_PLAUSIBLE_COORD &&
+    box.maxX - box.minX <= MAX_PLAUSIBLE_SIZE &&
+    box.maxY - box.minY <= MAX_PLAUSIBLE_SIZE
+  );
 }
 
 /** Normalized bounding box of one landmark set; null if degenerate. */
@@ -185,13 +219,23 @@ export function selectFaces(
   const cfg = { ...DEFAULT_FACE_SELECTION_CONFIG, ...config };
   const faces = result.faceLandmarks ?? [];
   const boxes: Array<{ index: number; box: FaceBox; width: number; area: number }> = [];
+  let rejected = 0;
   for (let i = 0; i < faces.length; i++) {
     const box = boundingBoxOf(faces[i]);
-    if (!box) continue;
+    if (!box) {
+      rejected += 1;
+      continue;
+    }
+    if (!isPlausiblyNormalized(box)) {
+      rejected += 1;
+      continue;
+    }
     const width = box.maxX - box.minX;
     boxes.push({ index: i, box, width, area: width * (box.maxY - box.minY) });
   }
-  if (boxes.length === 0) return { index: -1, box: null, count: 0, rawCount: faces.length };
+  if (boxes.length === 0) {
+    return { index: -1, box: null, count: 0, rawCount: faces.length, rejected };
+  }
 
   let primary = boxes[0];
   for (const b of boxes) if (b.area > primary.area) primary = b;
@@ -204,7 +248,7 @@ export function selectFaces(
     if (overlapRatio(b.box, primary.box) >= cfg.duplicateOverlap) continue; // same face twice
     count += 1;
   }
-  return { index: primary.index, box: primary.box, count, rawCount: faces.length };
+  return { index: primary.index, box: primary.box, count, rawCount: faces.length, rejected };
 }
 
 export interface MapObservationOptions {

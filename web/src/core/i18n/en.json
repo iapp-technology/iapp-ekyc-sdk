@@ -49,5 +49,6 @@
   "error_too_many_restarts": "The liveness check was interrupted too many times. Please try again.",
   "no_document_found": "No document detected — position the card in the frame and try again",
   "turn_left_arrow": "◀ Turn your head LEFT",
-  "turn_right_arrow": "Turn your head RIGHT ▶"
+  "turn_right_arrow": "Turn your head RIGHT ▶",
+  "error_face_detector": "This device's camera could not be used for face detection. Please try another device."
 }

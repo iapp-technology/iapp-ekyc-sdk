@@ -3,6 +3,39 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.4] — 2026-08-26
+
+### Fixed
+- **Unusable detector output no longer hangs the flow.** A Galaxy S25 Ultra
+  returned landmark coordinates around **1e12** instead of the normalized
+  0..1 — the model was running, its output was numerically garbage. That
+  produced a face box 1.37e12 wide and a centre offset of 2.2e11 against a
+  0.12 threshold, so the flow sat on "position your face inside the oval"
+  forever, with no error and no `onError`. The same fault, before the 0.2.2
+  filtering, is what produced the original "only one face may be in view"
+  report: two garbage sets counted as two people.
+  - `selectFaces()` discards landmark sets that are not plausibly
+    normalized (outside roughly [-1, 2], or a side longer than 2 frames) and
+    counts them in the new `FaceSelection.rejected`. Bounds are generous by
+    design: a face at the very edge of frame overshoots slightly and must
+    still count.
+  - `rejected > 0 && count === 0` now makes active liveness and face capture
+    **rebuild the landmarker on the CPU delegate** after 15 consecutive
+    frames (~0.5 s), once per session.
+  - If the CPU delegate is no better, the session fails with the new
+    `FaceDetectorUnavailableError` (bridge code
+    `FACE_DETECTOR_UNAVAILABLE`, message key `error_face_detector`, EN/TH/ZH)
+    so the host app's error callback finally fires instead of the user
+    staring at a hint they cannot act on.
+  - `loadFaceLandmarker` caches one instance **per delegate**, so the CPU
+    reload cannot be handed the broken GPU instance back.
+
+### Added
+- `facecheck.html` reports "detector output unusable" as its own blocking
+  step, prints billion-scale coordinates in exponential notation, and
+  records the video dimensions during the run (stopping the camera zeroed
+  them, so a report copied afterwards read `0x0`).
+
 ## [web 0.2.3] — 2026-08-26
 
 ### Fixed

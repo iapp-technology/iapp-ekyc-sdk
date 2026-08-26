@@ -11,7 +11,12 @@
  */
 import { EkycApiClient } from '../core/api-client';
 import { CameraController } from '../core/camera';
-import { CancelledError, EkycError, LivenessFailedError } from '../core/errors';
+import {
+  CancelledError,
+  EkycError,
+  FaceDetectorUnavailableError,
+  LivenessFailedError,
+} from '../core/errors';
 import { createTranslator, type Locale, type Translator } from '../core/i18n/i18n';
 import { applyTheme, type EkycTheme } from '../core/theme';
 import type { ActiveLivenessResult, SdkIntegration } from '../core/types';
@@ -45,6 +50,14 @@ import { JPEG_QUALITY } from '../vision/perspective';
 const SELFIE_CROP_MARGIN = 0.4;
 /** Downscale width for the sharpness analysis crop (perf only). */
 const ANALYSIS_CROP_WIDTH = 160;
+/**
+ * Consecutive frames of unusable detector output (running, but every
+ * landmark set numerically impossible) before rebuilding the landmarker on
+ * the CPU delegate. Half a second at 30 fps — long enough not to fire on a
+ * startup hiccup, short enough that the user is not left staring at a hint
+ * they cannot act on.
+ */
+const UNUSABLE_FRAMES_BEFORE_CPU_RETRY = 15;
 
 const CHALLENGE_MESSAGE_KEY: Record<ChallengeType, string> = {
   blink: 'blink_now',
@@ -119,6 +132,9 @@ class LivenessSession {
   private lastMessageKey = '';
   private analysisCanvas: HTMLCanvasElement | null = null;
   private bestCanvas: HTMLCanvasElement | null = null;
+  private unusableStreak = 0;
+  private triedCpuDelegate = false;
+  private swappingDelegate = false;
 
   constructor(
     api: EkycApiClient,
@@ -191,6 +207,20 @@ class LivenessSession {
       selection,
     });
 
+    // The detector is running but returning impossible coordinates: retry
+    // on the CPU delegate once, then surface a real error. Without this the
+    // flow shows a hint the user cannot act on, forever, and never calls
+    // back (field report, Galaxy S25 Ultra, Aug 2026).
+    if (selection.rejected > 0 && selection.count === 0) {
+      this.unusableStreak += 1;
+      if (this.unusableStreak >= UNUSABLE_FRAMES_BEFORE_CPU_RETRY) {
+        void this.recoverFromUnusableDetector();
+        return;
+      }
+    } else if (selection.count > 0) {
+      this.unusableStreak = 0;
+    }
+
     this.options.onObservation?.(obs);
     const snapshot = this.machine.process(obs);
     this.considerBestFrame(selection, obs, video);
@@ -202,6 +232,36 @@ class LivenessSession {
       this.fail(new LivenessFailedError(snapshot.failReason ?? 'unknown'));
     }
   };
+
+  /**
+   * Rebuild the landmarker on the CPU delegate after the GPU one produced
+   * unusable output. Only ever tried once per session; if the CPU delegate
+   * is no better, the session fails with a typed error so the host app's
+   * error callback fires instead of the flow hanging.
+   */
+  private async recoverFromUnusableDetector(): Promise<void> {
+    if (this.swappingDelegate || this.finished) return;
+    if (this.triedCpuDelegate) {
+      this.fail(new FaceDetectorUnavailableError());
+      return;
+    }
+    this.swappingDelegate = true;
+    this.triedCpuDelegate = true;
+    this.unusableStreak = 0;
+    try {
+      const cpu = await loadFaceLandmarker({
+        assetBaseUrl: this.options.assetBaseUrl,
+        modelUrl: this.options.modelUrl,
+        delegate: 'CPU',
+      });
+      if (this.finished) return;
+      this.landmarker = cpu;
+    } catch (e) {
+      this.fail(new FaceDetectorUnavailableError(undefined, { cause: e }));
+    } finally {
+      this.swappingDelegate = false;
+    }
+  }
 
   /** Best-frame selection across the entire session (spec). */
   private considerBestFrame(

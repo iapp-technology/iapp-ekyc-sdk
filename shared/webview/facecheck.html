@@ -93,7 +93,8 @@
   var framesWithExtra = 0;   // raw detector reported more than one face
   var framesMultiPerson = 0; // SDK still counted more than one person
   var maxRaw = 0;
-  var gate = { hold: 0, noFace: 0, tooSmall: 0, offCentre: 0, multi: 0 };
+  var gate = { hold: 0, noFace: 0, tooSmall: 0, offCentre: 0, multi: 0, unusable: 0 };
+  var videoSize = 'not started';
   var offsets = [];
   var lastLines = [];
   var report = '';
@@ -151,11 +152,12 @@
       'engine: ' + (window.IappEkyc && window.IappEkyc.SDK_VERSION),
       'page: facecheck/1',
       'userAgent: ' + navigator.userAgent,
-      'video: ' + video.videoWidth + 'x' + video.videoHeight,
+      'video: ' + videoSize,
       'frames analysed: ' + frames,
       'gate OK (flow proceeds): ' + gate.hold +
         ' (' + fmt(frames ? 100 * gate.hold / frames : 0, 1) + '%)',
       'blocked by no face: ' + gate.noFace +
+        ' | detector output unusable: ' + gate.unusable +
         ' | more than one person: ' + gate.multi +
         ' | face too small: ' + gate.tooSmall +
         ' | face off centre: ' + gate.offCentre,
@@ -193,6 +195,7 @@
     }
     el.className = 'verdict bad';
     var worst = 'no face detected', n = gate.noFace;
+    if (gate.unusable > n) { worst = 'detector output unusable'; n = gate.unusable; }
     if (gate.multi > n) { worst = 'more than one person'; n = gate.multi; }
     if (gate.tooSmall > n) { worst = 'face too small'; n = gate.tooSmall; }
     if (gate.offCentre > n) { worst = 'face off centre'; n = gate.offCentre; }
@@ -216,11 +219,17 @@
     // The exact gate the active-liveness findFace phase applies, so the
     // report names the step that is actually blocking the flow.
     var W = video.videoWidth, H = video.videoHeight;
+    // Recorded during the run: stopping the camera zeroes these, and a
+    // report copied afterwards would otherwise read "0x0".
+    videoSize = W + 'x' + H;
     var obs = window.IappEkyc.mapObservation(result, {
       frameWidth: W, frameHeight: H, ovalCenterX: 0.5, ovalCenterY: 0.45
     });
     var step;
-    if (obs.count === 0) { step = 'no face detected'; gate.noFace++; }
+    if (selection.rejected > 0 && selection.count === 0) {
+      step = 'detector output unusable'; gate.unusable++;
+    }
+    else if (obs.count === 0) { step = 'no face detected'; gate.noFace++; }
     else if (selection.count > 1) { step = 'more than one person'; gate.multi++; }
     else if (obs.faceWidthFrac < 0.25) { step = 'face too small'; gate.tooSmall++; }
     else if (obs.centerOffsetFrac >= 0.12) { step = 'face off centre'; gate.offCentre++; }
@@ -247,8 +256,12 @@
           extra = ' overlap=' + fmt(overlap(b, s), 2) +
             ' widthRatio=' + fmt(s.w > 0 ? b.w / s.w : 0, 2);
         }
-        parts.push(tag + '[x=' + fmt(b.x, 2) + ' y=' + fmt(b.y, 2) +
-          ' w=' + fmt(b.w, 2) + ' h=' + fmt(b.h, 2) + extra + ']');
+        // Exponential notation: an unusable frame carries coordinates in the
+        // billions, which fixed-point formatting makes unreadable.
+        var big = Math.abs(b.x) > 9 || Math.abs(b.w) > 9;
+        var num = function (v) { return big ? v.toExponential(2) : fmt(v, 2); };
+        parts.push(tag + '[x=' + num(b.x) + ' y=' + num(b.y) +
+          ' w=' + num(b.w) + ' h=' + num(b.h) + extra + ']');
       }
       lastLines.push(parts.join('  '));
       if (lastLines.length > 12) lastLines.shift();
@@ -292,7 +305,8 @@
     startBtn.disabled = true;
     startBtn.textContent = 'Loading detector...';
     frames = framesWithExtra = framesMultiPerson = maxRaw = 0;
-    gate = { hold: 0, noFace: 0, tooSmall: 0, offCentre: 0, multi: 0 };
+    gate = { hold: 0, noFace: 0, tooSmall: 0, offCentre: 0, multi: 0, unusable: 0 };
+    videoSize = 'not started';
     offsets = [];
     lastLines = [];
 

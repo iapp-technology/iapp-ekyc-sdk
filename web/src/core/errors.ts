@@ -170,6 +170,22 @@ export class InsecureContextError extends CameraError {
   }
 }
 
+/**
+ * The on-device face detector is running but its output is unusable — e.g.
+ * landmark coordinates that are not normalized to the frame. Seen on
+ * specific device / WebView combinations; the flow retries on the CPU
+ * delegate first and only raises this if that fails too.
+ */
+export class FaceDetectorUnavailableError extends EkycError {
+  constructor(
+    message = 'The on-device face detector returned unusable output',
+    options: EkycErrorOptions = {},
+  ) {
+    super(message, { userMessageKey: 'error_face_detector', statusCode: null, ...options });
+    this.name = 'FaceDetectorUnavailableError';
+  }
+}
+
 /** Extract a human-readable message from a raw error response body. */
 function messageFromBody(rawBody: string | null, fallback: string): string {
   if (!rawBody) return fallback;

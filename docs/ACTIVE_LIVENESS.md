@@ -59,6 +59,23 @@ detector's list to *people*, with identical rules:
    subject's width, and overlaps the subject by less than
    `duplicateOverlap` (0.30 of the smaller box).
 
+**Impossible coordinates are discarded.** Landmarks are normalized to the
+frame, so a box outside roughly [-1, 2] with a side longer than 2 frames is
+not a face — it is a detector that is running but producing garbage. A
+Galaxy S25 Ultra (Aug 2026) returned coordinates around 1e12, which fed a
+face box of width 1.37e12 into the centring check and pinned the flow on
+`center_face` with no error and no callback. Such sets are counted in
+`FaceSelection.rejected` and excluded from `count`.
+
+`rejected > 0 && count === 0` — the detector is running, everything it
+returns is unusable — makes the flow **rebuild the landmarker on the CPU
+delegate** after `UNUSABLE_FRAMES_BEFORE_CPU_RETRY` (15) consecutive
+frames, once per session. If the CPU delegate is no better, the session
+fails with `FaceDetectorUnavailableError` (bridge code
+`FACE_DETECTOR_UNAVAILABLE`) so the host app's error callback fires. The
+loader caches one instance **per delegate** — a CPU reload must never hand
+back the broken GPU instance.
+
 `FaceObservation.rawFaceCount` (web) carries the pre-filter number for
 support diagnostics. Thresholds are overridable per session via
 `startActiveLiveness({ faceSelection })` / `captureFace({ faceSelection })`;

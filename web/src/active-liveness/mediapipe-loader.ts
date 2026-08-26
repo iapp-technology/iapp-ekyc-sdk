@@ -46,9 +46,17 @@ export interface LoadFaceLandmarkerOptions {
    * and occasionally returns a phantom, which face-metrics.ts filters out.
    */
   numFaces?: number;
+  /**
+   * Pin the inference delegate. Left unset, the GPU is tried first and the
+   * CPU is used if creating the GPU landmarker throws. Some devices instead
+   * create a GPU landmarker successfully and then emit numerically garbage
+   * landmarks — the flow detects that at runtime and reloads with 'CPU'.
+   */
+  delegate?: 'GPU' | 'CPU';
 }
 
-let sharedPromise: Promise<FaceLandmarkerLike> | null = null;
+/** One shared instance per delegate: reloading on CPU must not hand back the broken GPU one. */
+const sharedPromises = new Map<string, Promise<FaceLandmarkerLike>>();
 
 /** Indirect dynamic import so bundlers do not rewrite/deny the URL import. */
 const importByUrl: (url: string) => Promise<unknown> =
@@ -81,13 +89,15 @@ async function loadTasksVisionModule(assetBaseUrl?: string): Promise<TasksVision
 export function loadFaceLandmarker(
   options: LoadFaceLandmarkerOptions = {},
 ): Promise<FaceLandmarkerLike> {
-  if (!sharedPromise) {
-    sharedPromise = doLoad(options).catch((e) => {
-      sharedPromise = null; // allow retry after transient network failure
-      throw e;
-    });
-  }
-  return sharedPromise;
+  const key = options.delegate ?? 'auto';
+  const existing = sharedPromises.get(key);
+  if (existing) return existing;
+  const promise = doLoad(options).catch((e) => {
+    sharedPromises.delete(key); // allow retry after transient network failure
+    throw e;
+  });
+  sharedPromises.set(key, promise);
+  return promise;
 }
 
 async function doLoad(options: LoadFaceLandmarkerOptions): Promise<FaceLandmarkerLike> {
@@ -108,6 +118,12 @@ async function doLoad(options: LoadFaceLandmarkerOptions): Promise<FaceLandmarke
     outputFacialTransformationMatrixes: true,
   });
 
+  if (options.delegate) {
+    return (await mod.FaceLandmarker.createFromOptions(
+      fileset,
+      baseOptions(options.delegate),
+    )) as FaceLandmarkerLike;
+  }
   try {
     return (await mod.FaceLandmarker.createFromOptions(
       fileset,
@@ -121,7 +137,7 @@ async function doLoad(options: LoadFaceLandmarkerOptions): Promise<FaceLandmarke
   }
 }
 
-/** Test hook: clear the shared promise. */
+/** Test hook: clear the shared promises. */
 export function resetFaceLandmarkerLoaderForTests(): void {
-  sharedPromise = null;
+  sharedPromises.clear();
 }

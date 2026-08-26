@@ -12,7 +12,7 @@
  * lazy-loads MediaPipe exactly like the liveness flow.
  */
 import { CameraController } from '../core/camera';
-import { CancelledError, EkycError } from '../core/errors';
+import { CancelledError, EkycError, FaceDetectorUnavailableError } from '../core/errors';
 import { createTranslator, type Locale, type Translator } from '../core/i18n/i18n';
 import { applyTheme, type EkycTheme } from '../core/theme';
 import {
@@ -85,6 +85,12 @@ const ANALYSIS_CROP_WIDTH = 160;
  * (see face-metrics.ts). Mirrors the challenge machine's `multiFaceFrames`.
  */
 const MULTI_FACE_FRAMES = 5;
+/**
+ * Consecutive frames of unusable detector output (running, but every
+ * landmark set numerically impossible) before rebuilding on the CPU
+ * delegate. Mirrors the active-liveness recovery.
+ */
+const UNUSABLE_FRAMES_BEFORE_CPU_RETRY = 15;
 
 const STATE_MESSAGE_KEY: Record<FaceCaptureState, string> = {
   initializing: 'initializing',
@@ -136,6 +142,9 @@ class FaceCaptureSession {
   private landmarker: FaceLandmarkerLike | null = null;
   private rafId: number | null = null;
   private multiFaceStreak = 0;
+  private unusableStreak = 0;
+  private triedCpuDelegate = false;
+  private swappingDelegate = false;
   private manualTimer: ReturnType<typeof setTimeout> | null = null;
   private finished = false;
   private state: FaceCaptureState = 'initializing';
@@ -226,6 +235,18 @@ class FaceCaptureSession {
       selection,
     });
 
+    // Detector running but returning impossible coordinates: retry on the
+    // CPU delegate once, then surface a real error (see active-liveness.ts).
+    if (selection.rejected > 0 && selection.count === 0) {
+      this.unusableStreak += 1;
+      if (this.unusableStreak >= UNUSABLE_FRAMES_BEFORE_CPU_RETRY) {
+        void this.recoverFromUnusableDetector();
+        return;
+      }
+    } else if (selection.count > 0) {
+      this.unusableStreak = 0;
+    }
+
     this.considerBestFrame(selection, obs, video);
 
     this.multiFaceStreak = obs.count > 1 ? this.multiFaceStreak + 1 : 0;
@@ -244,6 +265,31 @@ class FaceCaptureSession {
 
     if (held) void this.capture();
   };
+
+  /** See ActiveLivenessFlow.recoverFromUnusableDetector — same contract. */
+  private async recoverFromUnusableDetector(): Promise<void> {
+    if (this.swappingDelegate || this.finished) return;
+    if (this.triedCpuDelegate) {
+      this.fail(new FaceDetectorUnavailableError());
+      return;
+    }
+    this.swappingDelegate = true;
+    this.triedCpuDelegate = true;
+    this.unusableStreak = 0;
+    try {
+      const cpu = await loadFaceLandmarker({
+        assetBaseUrl: this.options.assetBaseUrl,
+        modelUrl: this.options.modelUrl,
+        delegate: 'CPU',
+      });
+      if (this.finished) return;
+      this.landmarker = cpu;
+    } catch (e) {
+      this.fail(new FaceDetectorUnavailableError(undefined, { cause: e }));
+    } finally {
+      this.swappingDelegate = false;
+    }
+  }
 
   private isFrontal(obs: FaceObservation, multiFace: boolean): boolean {
     return (

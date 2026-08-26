@@ -115,6 +115,7 @@ Engine errors (`error.messageKey` resolves through the engine i18n tables):
 | `CAMERA_PERMISSION_DENIED` | null | CameraPermissionDeniedError |
 | `CAMERA_NOT_FOUND` | null | CameraNotFoundError / CameraError |
 | `INSECURE_CONTEXT` | null | InsecureContextError |
+| `FACE_DETECTOR_UNAVAILABLE` | null | FaceDetectorUnavailableError |
 | `UNKNOWN` | passthrough | anything else |
 
 Host-page / wrapper errors (no engine involved):

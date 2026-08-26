@@ -259,7 +259,36 @@ describe('selectFaces', () => {
 
   it('no faces -> count 0, index -1', () => {
     const sel = selectFaces(withFaces([]));
-    expect(sel).toEqual({ index: -1, box: null, count: 0, rawCount: 0 });
+    expect(sel).toEqual({ index: -1, box: null, count: 0, rawCount: 0, rejected: 0 });
+  });
+
+  it('rejects landmark sets that are not normalized to the frame', () => {
+    // Verbatim from a Galaxy S25 Ultra field report (Aug 2026): the model
+    // ran and returned two "faces", with coordinates around 1e12. Feeding
+    // that box to the centring check produced an offset of 2.2e11 against a
+    // 0.12 threshold, pinning the flow on "position your face inside the
+    // oval" with no error and no callback.
+    const junk = box(-606609145856, -277947580416, 767892127744, 511785238528);
+    const junk2 = box(-402275532800, -121554010112, 181751250944, 178385174528);
+    const sel = selectFaces(withFaces([junk, junk2]));
+    expect(sel.count).toBe(0);
+    expect(sel.index).toBe(-1);
+    expect(sel.rawCount).toBe(2);
+    expect(sel.rejected).toBe(2);
+  });
+
+  it('a real face alongside an impossible one still works', () => {
+    const junk = box(-606609145856, -277947580416, 767892127744, 511785238528);
+    const sel = selectFaces(withFaces([junk, box(0.3, 0.3, 0.7, 0.8)]));
+    expect(sel.count).toBe(1);
+    expect(sel.index).toBe(1);
+    expect(sel.rejected).toBe(1);
+  });
+
+  it('tolerates the small overshoot of a face at the frame edge', () => {
+    const sel = selectFaces(withFaces([box(-0.05, -0.02, 0.42, 0.6)]));
+    expect(sel.count).toBe(1);
+    expect(sel.rejected).toBe(0);
   });
 
   it('the same face detected twice counts once', () => {
@@ -288,6 +317,17 @@ describe('selectFaces', () => {
     const sel = selectFaces(withFaces([secondPerson(), box(0.3, 0.3, 0.7, 0.8)]));
     expect(sel.index).toBe(1);
     expect(sel.box?.minX).toBeCloseTo(0.3, 6);
+  });
+
+  it('an unusable frame is distinguishable from an empty one', () => {
+    // rejected > 0 && count === 0 is the signal the flow acts on to rebuild
+    // the detector on the CPU delegate.
+    const junk = selectFaces(withFaces([box(-6e11, -2e11, 7e11, 5e11)]));
+    expect(junk.count).toBe(0);
+    expect(junk.rejected).toBeGreaterThan(0);
+    const empty = selectFaces(withFaces([]));
+    expect(empty.count).toBe(0);
+    expect(empty.rejected).toBe(0);
   });
 
   it('degenerate landmark sets (zero area / NaN) are dropped', () => {
