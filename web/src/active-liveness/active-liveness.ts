@@ -31,7 +31,13 @@ import {
   type FaceObservation,
   type MachineSnapshot,
 } from './challenge-machine';
-import { faceBoundingBox, mapObservation, type FaceLandmarkerResultLike } from './face-metrics';
+import {
+  mapObservation,
+  selectFaces,
+  type FaceLandmarkerResultLike,
+  type FaceSelection,
+  type FaceSelectionConfig,
+} from './face-metrics';
 import { loadFaceLandmarker, type FaceLandmarkerLike } from './mediapipe-loader';
 import { JPEG_QUALITY } from '../vision/perspective';
 
@@ -72,6 +78,11 @@ export interface ActiveLivenessStartOptions {
   machineConfig?: Partial<ChallengeMachineConfig>;
   /** Debug hook: fires for every processed frame with the raw observation. */
   onObservation?: (obs: FaceObservation) => void;
+  /**
+   * Tuning for "how many people are in frame" (face-metrics.ts). Defaults
+   * suit every device we have measured; override only on support advice.
+   */
+  faceSelection?: Partial<FaceSelectionConfig>;
   /** Wrapper SDK identity for the challenge log (docs/WEBVIEW_BRIDGE.md). */
   integration?: SdkIntegration;
 }
@@ -171,16 +182,18 @@ class LivenessSession {
     ) as FaceLandmarkerResultLike;
 
     const oval = computeOvalGuide(video.videoWidth, video.videoHeight);
+    const selection = selectFaces(result, this.options.faceSelection);
     const obs = mapObservation(result, {
       frameWidth: video.videoWidth,
       frameHeight: video.videoHeight,
       ovalCenterX: oval.cx / video.videoWidth,
       ovalCenterY: oval.cy / video.videoHeight,
+      selection,
     });
 
     this.options.onObservation?.(obs);
     const snapshot = this.machine.process(obs);
-    this.considerBestFrame(result, obs, video);
+    this.considerBestFrame(selection, obs, video);
     this.render(snapshot, obs, oval);
 
     if (snapshot.phase === 'capture') {
@@ -192,12 +205,12 @@ class LivenessSession {
 
   /** Best-frame selection across the entire session (spec). */
   private considerBestFrame(
-    result: FaceLandmarkerResultLike,
+    selection: FaceSelection,
     obs: FaceObservation,
     video: HTMLVideoElement,
   ): void {
     if (!this.selector.isCandidate(obs) || !this.analysisCanvas) return;
-    const bbox = faceBoundingBox(result);
+    const bbox = selection.box;
     if (!bbox) return;
     const vw = video.videoWidth;
     const vh = video.videoHeight;
@@ -243,13 +256,13 @@ class LivenessSession {
     switch (snapshot.phase) {
       case 'findFace':
         if (obs.count === 0) return 'center_face';
-        if (obs.count > 1) return 'multiple_faces';
+        if (snapshot.multiFace) return 'multiple_faces';
         if (obs.faceWidthFrac < 0.25) return 'move_face_closer';
         if (obs.centerOffsetFrac >= 0.12) return 'center_face';
         return 'hold_face';
       case 'challenge': {
         if (obs.count === 0) return 'face_lost';
-        if (obs.count > 1) return 'multiple_faces';
+        if (snapshot.multiFace) return 'multiple_faces';
         const type = snapshot.currentChallenge;
         return type ? CHALLENGE_MESSAGE_KEY[type] : 'hold_face';
       }

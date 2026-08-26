@@ -65,6 +65,13 @@ class ChallengeConfig {
   final int maxRestartsPerChallenge;
   final int challengeTimeoutMs;
 
+  /// A second person must be seen on this many CONSECUTIVE frames before
+  /// it blocks findFace, shows `multiple_faces` or restarts a challenge.
+  /// Face detectors emit the occasional single-frame phantom; without the
+  /// debounce one such frame restarted the challenge and three failed the
+  /// session (docs/ACTIVE_LIVENESS.md).
+  final int multiFaceFrames;
+
   const ChallengeConfig({
     this.challengeCount = 3,
     this.challengePool = const [
@@ -93,6 +100,7 @@ class ChallengeConfig {
     this.faceLostMaxMs = 1000,
     this.maxRestartsPerChallenge = 3,
     this.challengeTimeoutMs = 15000,
+    this.multiFaceFrames = 5,
   });
 }
 
@@ -218,6 +226,9 @@ class ChallengeStateMachine {
   // findFace / recenter progress.
   int _goodFrameStreak = 0;
 
+  // Consecutive frames that reported more than one person.
+  int _multiFaceStreak = 0;
+
   // Adaptive blink: EMA of the user's own open-eye level (null until
   // seeded by the first frontal frame with min(left, right) > 0.3).
   double? _eyeBaseline;
@@ -251,6 +262,7 @@ class ChallengeStateMachine {
     _finishedAtMs = null;
     _phase = LivenessPhase.findFace;
     _lastInstructionKey = 'position_face';
+    _multiFaceStreak = 0;
   }
 
   /// Marks the network finalize step as started (after capture).
@@ -274,6 +286,7 @@ class ChallengeStateMachine {
   /// Feeds one processed frame. Must be called with real observations at
   /// real wall-clock times — the server enforces timestamp sanity.
   LivenessUpdate process(FaceObservation obs) {
+    _multiFaceStreak = obs.count > 1 ? _multiFaceStreak + 1 : 0;
     switch (_phase) {
       case LivenessPhase.findFace:
         return _processFindFace(obs);
@@ -294,8 +307,13 @@ class ChallengeStateMachine {
   // findFace / recenter
   // -------------------------------------------------------------------
 
+  /// A second person only blocks the flow once it has survived
+  /// [ChallengeConfig.multiFaceFrames] consecutive frames.
+  bool get multiFaceDetected => _multiFaceStreak >= config.multiFaceFrames;
+
   bool _meetsFrontalConditions(FaceObservation obs) =>
-      obs.count == 1 &&
+      obs.count >= 1 &&
+      !multiFaceDetected &&
       obs.faceWidthFrac >= config.minFaceWidthFrac &&
       obs.yawDeg.abs() < config.maxAbsYawDeg &&
       obs.pitchDeg.abs() < config.maxAbsPitchDeg &&
@@ -318,7 +336,7 @@ class ChallengeStateMachine {
 
   String _frontalHintKey(FaceObservation obs) {
     if (obs.count == 0) return 'position_face';
-    if (obs.count > 1) return 'multiple_faces';
+    if (multiFaceDetected) return 'multiple_faces';
     if (obs.faceWidthFrac < config.minFaceWidthFrac) return 'move_face_closer';
     if (obs.centerOffsetFrac >= config.maxCenterOffsetFrac) {
       return 'center_face';
@@ -375,7 +393,7 @@ class ChallengeStateMachine {
     _issuedAtMs = _nowMs();
     _restarts = 0;
     _goodFrameStreak = 0;
-    _lastTrackingId = obs.count == 1 ? obs.trackingId : null;
+    _lastTrackingId = obs.count >= 1 ? obs.trackingId : null;
     _resetChallengeProgress(obs);
   }
 
@@ -386,7 +404,7 @@ class ChallengeStateMachine {
     _faceLostSinceMs = null;
     // Baseline yaw for turn challenges: captured at issue when a single
     // face is visible, else lazily on the next single-face frame.
-    _turnBaselineYaw = (obs != null && obs.count == 1) ? obs.yawDeg : null;
+    _turnBaselineYaw = (obs != null && obs.count >= 1) ? obs.yawDeg : null;
   }
 
   LivenessUpdate _processChallenge(FaceObservation obs) {
@@ -398,9 +416,14 @@ class ChallengeStateMachine {
       return _fail(LivenessFailureReason.challengeTimeout);
     }
 
-    // Anti-cheat.
-    if (obs.count > 1) {
-      return _restartChallenge('multiple_faces');
+    // Anti-cheat: a second person restarts the challenge once per streak;
+    // the challenge then stays frozen on the message until the frame is
+    // clean again.
+    if (multiFaceDetected) {
+      if (_multiFaceStreak == config.multiFaceFrames) {
+        return _restartChallenge('multiple_faces');
+      }
+      return _update(LivenessEvent.none, 'multiple_faces');
     }
     if (obs.count == 0) {
       _faceLostSinceMs ??= now;

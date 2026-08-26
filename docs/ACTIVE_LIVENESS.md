@@ -14,7 +14,7 @@ state machine sees it:
 
 ```ts
 interface FaceObservation {
-  count: number;            // faces in frame
+  count: number;            // PEOPLE in frame (filtered, see below)
   yawDeg: number;           // + = user turned to THEIR left
   pitchDeg: number;         // + = looking up
   rollDeg: number;
@@ -38,13 +38,41 @@ interface FaceObservation {
   `smile = max(mouthSmileLeft, mouthSmileRight)` (max, not mean — natural
   smiles are often asymmetric).
 
+### `count` is filtered, not the raw detector output
+
+`count` is the number of PEOPLE in frame, not the number of detections.
+The web landmarker runs with `numFaces: 2` so a second person can be seen
+at all; the price is that the detector re-scans the whole frame for that
+second face on every frame, and on wide-FOV, high-resolution front cameras
+it periodically returns a phantom — the subject's own face boxed a second
+time, or a small face-like pattern in the background. `selectFaces()`
+(web) and `faceObservationFrom()` (Flutter) therefore reduce the
+detector's list to *people*, with identical rules:
+
+1. Degenerate landmark sets (zero-area box, non-finite coordinates) are
+   dropped.
+2. The **subject** is the LARGEST remaining face. Every per-face read —
+   bounding box, blendshapes, transformation matrix — uses that face's
+   index, never slot 0, which a phantom can occupy.
+3. A second face counts only when it is at least `minFaceWidthFrac` (0.06)
+   of the frame wide, at least `minSecondaryWidthRatio` (0.40) of the
+   subject's width, and overlaps the subject by less than
+   `duplicateOverlap` (0.30 of the smaller box).
+
+`FaceObservation.rawFaceCount` (web) carries the pre-filter number for
+support diagnostics. Thresholds are overridable per session via
+`startActiveLiveness({ faceSelection })` / `captureFace({ faceSelection })`;
+on Flutter they are the `kMinSecondaryFaceWidthFrac`,
+`kMinSecondaryWidthRatio` and `kDuplicateFaceOverlap` constants in
+`face_metrics.dart`.
+
 ## State machine
 
 Pure code (no camera/ML imports), RNG injectable for tests:
 
 `init → findFace → challenge[0..N-1] → recenter → capture → finalizing → done | failed`
 
-- **findFace**: exactly 1 face, `faceWidthFrac ≥ 0.25`, `|yaw| < 15°`,
+- **findFace**: a face and no confirmed second person, `faceWidthFrac ≥ 0.25`, `|yaw| < 15°`,
   `|pitch| < 12°`, `centerOffsetFrac < 0.12`, held for **20** consecutive
   processed frames.
 - **Challenges**: draw **N = 3** distinct challenges uniformly at random
@@ -67,9 +95,14 @@ Pure code (no camera/ML imports), RNG injectable for tests:
     `|yaw| < 12°` to complete.
   - **smile** — `smile ≥ 0.45` sustained **350 ms** (score is the max of
     the two mouth-corner blendshapes; a neutral face reads < 0.2).
-- **Anti-cheat**: face lost > 1 s, `count ≠ 1`, or tracking-ID change
-  (Flutter) → restart the current challenge. **3** restarts of one
-  challenge or **15 s** timeout per challenge → `failed(reason)`.
+- **Anti-cheat**: face lost > 1 s, a second person in frame, or a
+  tracking-ID change (Flutter) → restart the current challenge. **3**
+  restarts of one challenge or **15 s** timeout per challenge →
+  `failed(reason)`. The second-person rule is **debounced**: `count > 1`
+  must hold for `multiFaceFrames` (**5**) consecutive frames before it
+  blocks findFace, shows `multiple_faces`, or restarts a challenge — and it
+  restarts once per streak, not once per frame. Snapshots expose the
+  debounced state as `MachineSnapshot.multiFace`.
 - **recenter**: findFace conditions again (fresh frontal pose before
   capture).
 - **Best-frame selection** runs across the ENTIRE session: every processed

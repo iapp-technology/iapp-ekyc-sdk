@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   eulerFromMatrix,
   mapObservation,
+  selectFaces,
   type FaceLandmarkerResultLike,
 } from '../src/active-liveness/face-metrics';
 
@@ -189,9 +190,103 @@ describe('mapObservation', () => {
   it('reports count for multi-face frames', () => {
     const base = fakeResult();
     const obs = mapObservation(
-      { ...base, faceLandmarks: [base.faceLandmarks[0], base.faceLandmarks[0]] },
+      { ...base, faceLandmarks: [base.faceLandmarks[0], secondPerson()] },
       opts,
     );
     expect(obs.count).toBe(2);
+  });
+
+  it('reads blendshapes and pose from the SUBJECT, not from slot 0', () => {
+    // A phantom detection landed in slot 0; the real (larger) face is
+    // second, and so are its blendshapes / transformation matrix.
+    const base = fakeResult();
+    const obs = mapObservation(
+      {
+        faceLandmarks: [box(0.05, 0.05, 0.15, 0.2), base.faceLandmarks[0]],
+        faceBlendshapes: [{ categories: [{ categoryName: 'eyeBlinkLeft', score: 0.9 }] },
+          base.faceBlendshapes[0]],
+        facialTransformationMatrixes: [
+          { rows: 4, columns: 4, data: mat4(rotY(-40)) },
+          base.facialTransformationMatrixes[0],
+        ],
+      },
+      opts,
+    );
+    expect(obs.count).toBe(1);
+    expect(obs.leftEyeOpen).toBeCloseTo(0.9, 6); // the subject's, not 0.1
+    expect(obs.yawDeg).toBeCloseTo(20, 3);
+    expect(obs.faceWidthFrac).toBeCloseTo(0.4, 6);
+  });
+});
+
+/** Axis-aligned rectangle of landmarks (the bbox is all selectFaces reads). */
+function box(minX: number, minY: number, maxX: number, maxY: number) {
+  return [
+    { x: minX, y: minY, z: 0 },
+    { x: maxX, y: minY, z: 0 },
+    { x: maxX, y: maxY, z: 0 },
+    { x: minX, y: maxY, z: 0 },
+  ];
+}
+
+/** A genuine second person: comparable size, no overlap with the subject. */
+function secondPerson() {
+  return box(0.75, 0.3, 0.98, 0.72); // width 0.23 vs the subject's 0.4
+}
+
+/**
+ * Regression cover for the Galaxy S25 Ultra report (Aug 2026): a phantom
+ * second detection pinned the flow on "only one face may be in view".
+ */
+describe('selectFaces', () => {
+  const withFaces = (faces: Array<Array<{ x: number; y: number; z: number }>>) =>
+    ({ faceLandmarks: faces, faceBlendshapes: [], facialTransformationMatrixes: [] }) as
+      unknown as FaceLandmarkerResultLike;
+
+  it('no faces -> count 0, index -1', () => {
+    const sel = selectFaces(withFaces([]));
+    expect(sel).toEqual({ index: -1, box: null, count: 0, rawCount: 0 });
+  });
+
+  it('the same face detected twice counts once', () => {
+    const sel = selectFaces(withFaces([box(0.3, 0.3, 0.7, 0.8), box(0.32, 0.28, 0.69, 0.79)]));
+    expect(sel.count).toBe(1);
+    expect(sel.rawCount).toBe(2);
+  });
+
+  it('a ghost nested inside the subject counts once', () => {
+    const sel = selectFaces(withFaces([box(0.3, 0.3, 0.7, 0.8), box(0.4, 0.4, 0.6, 0.65)]));
+    expect(sel.count).toBe(1);
+  });
+
+  it('a small background face does not block the flow', () => {
+    const sel = selectFaces(withFaces([box(0.3, 0.3, 0.7, 0.8), box(0.02, 0.1, 0.12, 0.24)]));
+    expect(sel.count).toBe(1);
+  });
+
+  it('a genuine second person still counts', () => {
+    const sel = selectFaces(withFaces([box(0.3, 0.3, 0.7, 0.8), secondPerson()]));
+    expect(sel.count).toBe(2);
+    expect(sel.rawCount).toBe(2);
+  });
+
+  it('the subject is the LARGEST face, whatever its slot', () => {
+    const sel = selectFaces(withFaces([secondPerson(), box(0.3, 0.3, 0.7, 0.8)]));
+    expect(sel.index).toBe(1);
+    expect(sel.box?.minX).toBeCloseTo(0.3, 6);
+  });
+
+  it('degenerate landmark sets (zero area / NaN) are dropped', () => {
+    const nan = [{ x: NaN, y: 0.2, z: 0 }, { x: 0.5, y: 0.5, z: 0 }];
+    const flat = box(0.4, 0.4, 0.4, 0.9);
+    const sel = selectFaces(withFaces([box(0.3, 0.3, 0.7, 0.8), nan, flat]));
+    expect(sel.count).toBe(1);
+    expect(sel.rawCount).toBe(3);
+  });
+
+  it('thresholds are overridable (strict mode keeps every detection)', () => {
+    const strict = { duplicateOverlap: 1.1, minSecondaryWidthRatio: 0, minFaceWidthFrac: 0 };
+    const sel = selectFaces(withFaces([box(0.3, 0.3, 0.7, 0.8), box(0.4, 0.4, 0.6, 0.65)]), strict);
+    expect(sel.count).toBe(2);
   });
 });

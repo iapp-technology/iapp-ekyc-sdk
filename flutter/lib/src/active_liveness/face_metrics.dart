@@ -19,6 +19,64 @@ FaceDetector createLivenessFaceDetector() => FaceDetector(
   ),
 );
 
+/// Secondary detections narrower than this fraction of the FRAME are noise.
+const double kMinSecondaryFaceWidthFrac = 0.06;
+
+/// A real second subject is at least this fraction of the subject's width;
+/// anything smaller is a bystander in the background, not a co-actor.
+const double kMinSecondaryWidthRatio = 0.40;
+
+/// intersection / min(area) at or above this = the SAME face, detected twice.
+const double kDuplicateFaceOverlap = 0.30;
+
+/// intersection area / smaller box area (0..1). Nest-aware, unlike IoU.
+double _overlapRatio(Rect a, Rect b) {
+  final w = (a.right < b.right ? a.right : b.right) -
+      (a.left > b.left ? a.left : b.left);
+  final h = (a.bottom < b.bottom ? a.bottom : b.bottom) -
+      (a.top > b.top ? a.top : b.top);
+  if (w <= 0 || h <= 0) return 0;
+  final smaller = (a.width * a.height) < (b.width * b.height)
+      ? a.width * a.height
+      : b.width * b.height;
+  return smaller > 0 ? (w * h) / smaller : 0;
+}
+
+/// PEOPLE in frame: the subject plus every detection that is genuinely a
+/// second person — big enough to matter, and not the subject's own face
+/// boxed twice. Detectors do emit the occasional phantom, and an
+/// unfiltered count pins the flow on "only one face may be in view"
+/// (see docs/ACTIVE_LIVENESS.md).
+int _peopleCount(List<Face> faces, Face subject, double frameWidth) {
+  var count = 1;
+  for (final f in faces) {
+    if (identical(f, subject)) continue;
+    final box = f.boundingBox;
+    if (box.width <= 0 || box.height <= 0) continue;
+    if (box.width / frameWidth < kMinSecondaryFaceWidthFrac) continue;
+    if (box.width < subject.boundingBox.width * kMinSecondaryWidthRatio) {
+      continue;
+    }
+    if (_overlapRatio(box, subject.boundingBox) >= kDuplicateFaceOverlap) {
+      continue;
+    }
+    count++;
+  }
+  return count;
+}
+
+/// The subject's face: the LARGEST detection, i.e. the person holding the
+/// phone. Never `faces.first` — detector order is not significance order,
+/// and a phantom detection can occupy slot 0.
+Face? subjectFace(List<Face> faces) {
+  if (faces.isEmpty) return null;
+  var subject = faces.first;
+  for (final f in faces.skip(1)) {
+    if (f.boundingBox.width > subject.boundingBox.width) subject = f;
+  }
+  return subject;
+}
+
 /// Reduces raw ML Kit output to a [FaceObservation].
 ///
 /// [frameSize] must be the UPRIGHT frame size (the coordinate space the
@@ -38,14 +96,10 @@ FaceObservation faceObservationFrom(
   if (faces.isEmpty || frameSize.width <= 0 || frameSize.height <= 0) {
     return FaceObservation.none;
   }
-  // With multiple faces, report metrics of the largest one — the state
-  // machine restarts on count != 1 regardless.
-  var face = faces.first;
-  if (faces.length > 1) {
-    for (final f in faces.skip(1)) {
-      if (f.boundingBox.width > face.boundingBox.width) face = f;
-    }
-  }
+  // The subject is the LARGEST face — the person holding the phone. Every
+  // metric below describes that face; `count` reports how many PEOPLE the
+  // frame holds (see _peopleCount).
+  final face = subjectFace(faces)!;
 
   var yaw = face.headEulerAngleY ?? 0;
   if (isAndroid) {
@@ -65,7 +119,7 @@ FaceObservation faceObservationFrom(
   final centerOffsetFrac = (center - target).distance / frameSize.width;
 
   return FaceObservation(
-    count: faces.length,
+    count: _peopleCount(faces, face, frameSize.width),
     yawDeg: yaw,
     pitchDeg: pitch,
     rollDeg: roll,

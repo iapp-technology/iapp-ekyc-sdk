@@ -3,7 +3,7 @@ description: >-
   iApp eKYC SDK for Flutter — Thai ID / passport document auto-capture with
   OCR, face verification, passive liveness, and active liveness challenges
   powered by the iApp AI platform (https://iapp.co.th).
-version: 0.1.0
+version: 0.1.1
 homepage: https://iapp.co.th
 repository: https://github.com/iapp-technology/iapp-ekyc-sdk
 

@@ -13,7 +13,11 @@ export type { ChallengeLogWire };
 
 /** Normalized face detector output (docs/ACTIVE_LIVENESS.md). */
 export interface FaceObservation {
-  /** Faces in frame. */
+  /**
+   * PEOPLE in frame, after phantom/duplicate/background filtering
+   * (active-liveness/face-metrics.ts `selectFaces`). Every other field
+   * describes the subject: the largest face in frame.
+   */
   count: number;
   /** + = user turned to THEIR left. */
   yawDeg: number;
@@ -30,6 +34,12 @@ export interface FaceObservation {
   faceWidthFrac: number;
   /** face center distance from oval center / frame width. */
   centerOffsetFrac: number;
+  /**
+   * Faces the detector reported before filtering. Diagnostics only — the
+   * machine never reads it; support uses it to tell a real second person
+   * (count 2) from a device emitting phantoms (count 1, rawFaceCount 2).
+   */
+  rawFaceCount?: number;
 }
 
 export type ChallengeType = 'blink' | 'turnLeft' | 'turnRight' | 'smile';
@@ -72,6 +82,8 @@ export interface MachineSnapshot {
   currentChallenge: ChallengeType | null;
   /** Restart count of the CURRENT challenge. */
   restarts: number;
+  /** A second person has been in frame for `multiFaceFrames` frames. */
+  multiFace: boolean;
   failReason: FailReason | null;
   completedCount: number;
 }
@@ -122,6 +134,13 @@ export interface ChallengeMachineConfig {
   smileHoldMs: number;
   /** Anti-cheat: face lost longer than this restarts the challenge (1 s). */
   faceLostGraceMs: number;
+  /**
+   * Anti-cheat debounce: a second face must be seen on this many
+   * CONSECUTIVE frames before it counts (5, ~0.2 s). Face detectors emit
+   * the occasional single-frame phantom; without a debounce one such frame
+   * restarted the challenge and three of them failed the whole session.
+   */
+  multiFaceFrames: number;
   /** Anti-cheat: this many restarts of one challenge fails the session (3). */
   maxRestarts: number;
   /** 15 s timeout per challenge fails the session. */
@@ -155,6 +174,7 @@ export const DEFAULT_CHALLENGE_MACHINE_CONFIG: Omit<ChallengeMachineConfig, 'rng
   smileAbove: 0.45,
   smileHoldMs: 350,
   faceLostGraceMs: 1000,
+  multiFaceFrames: 5,
   maxRestarts: 3,
   challengeTimeoutMs: 15_000,
 };
@@ -206,6 +226,7 @@ export class ChallengeMachine {
   private index = -1;
   private current: ChallengeRuntime | null = null;
   private lastFaceSeenAt: number | null = null;
+  private multiFaceStreak = 0;
   private eyeBaseline: number | null = null;
   private completed: CompletedChallenge[] = [];
   private startedAtMs = 0;
@@ -232,10 +253,12 @@ export class ChallengeMachine {
     this.phase = 'findFace';
     this.startedAtMs = this.cfg.now();
     this.holdFrames = 0;
+    this.multiFaceStreak = 0;
   }
 
   /** Feed one processed FaceObservation. Returns the new snapshot. */
   process(obs: FaceObservation): MachineSnapshot {
+    this.multiFaceStreak = obs.count > 1 ? this.multiFaceStreak + 1 : 0;
     switch (this.phase) {
       case 'findFace':
       case 'recenter':
@@ -309,15 +332,25 @@ export class ChallengeMachine {
       challengeCount: this.cfg.challengeCount,
       currentChallenge: this.current?.type ?? null,
       restarts: this.current?.restarts ?? 0,
+      multiFace: this.multiFaceConfirmed,
       failReason: this.failReason,
       completedCount: this.completed.length,
     };
   }
 
+  /**
+   * A second face only blocks the flow once it has survived
+   * `multiFaceFrames` consecutive frames — see the config comment.
+   */
+  private get multiFaceConfirmed(): boolean {
+    return this.multiFaceStreak >= this.cfg.multiFaceFrames;
+  }
+
   /** findFace acceptance predicate (also used for recenter). */
   private meetsFrontalHold(obs: FaceObservation): boolean {
     return (
-      obs.count === 1 &&
+      obs.count >= 1 &&
+      !this.multiFaceConfirmed &&
       obs.faceWidthFrac >= this.cfg.minFaceWidthFrac &&
       Math.abs(obs.yawDeg) < this.cfg.findFaceMaxAbsYawDeg &&
       Math.abs(obs.pitchDeg) < this.cfg.findFaceMaxAbsPitchDeg &&
@@ -382,7 +415,7 @@ export class ChallengeMachine {
       issuedAt: t,
       firstIssuedAt: t,
       restarts: 0,
-      baselineYaw: obs !== null && obs.count === 1 ? obs.yawDeg : null,
+      baselineYaw: obs !== null && obs.count >= 1 ? obs.yawDeg : null,
       blinkClosedAt: null,
       turned: false,
       smileSince: null,
@@ -420,9 +453,12 @@ export class ChallengeMachine {
       return;
     }
 
-    // Anti-cheat: multiple faces -> immediate restart.
-    if (obs.count > 1) {
-      this.restartCurrentChallenge();
+    // Anti-cheat: a second person in frame -> restart (debounced). The
+    // restart fires on the frame the streak crosses the threshold and the
+    // challenge then stays frozen — snapshot.multiFace keeps the "only one
+    // face" message on screen — until the frame is clean again.
+    if (this.multiFaceConfirmed) {
+      if (this.multiFaceStreak === this.cfg.multiFaceFrames) this.restartCurrentChallenge();
       return;
     }
     // Anti-cheat: face lost for more than the grace period -> restart.

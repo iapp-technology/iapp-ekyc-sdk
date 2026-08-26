@@ -40,7 +40,11 @@ export interface LoadFaceLandmarkerOptions {
   assetBaseUrl?: string;
   /** Override the face_landmarker .task model URL. */
   modelUrl?: string;
-  /** Max faces to track. 2 lets the machine detect `count != 1`. */
+  /**
+   * Max faces to track. 2 lets the machine see a second person at all; the
+   * price is that the detector re-scans every frame for that second face
+   * and occasionally returns a phantom, which face-metrics.ts filters out.
+   */
   numFaces?: number;
 }
 

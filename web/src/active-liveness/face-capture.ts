@@ -25,7 +25,13 @@ import {
 import { JPEG_QUALITY } from '../vision/perspective';
 import { BestFrameSelector, laplacianVarianceRgba } from './best-frame-selector';
 import type { FaceObservation } from './challenge-machine';
-import { faceBoundingBox, mapObservation, type FaceLandmarkerResultLike } from './face-metrics';
+import {
+  mapObservation,
+  selectFaces,
+  type FaceLandmarkerResultLike,
+  type FaceSelection,
+  type FaceSelectionConfig,
+} from './face-metrics';
 import { loadFaceLandmarker, type FaceLandmarkerLike } from './mediapipe-loader';
 
 export type FaceCaptureState =
@@ -48,6 +54,11 @@ export interface FaceCaptureStartOptions {
   assetBaseUrl?: string;
   /** Override the face_landmarker model URL. */
   modelUrl?: string;
+  /**
+   * Tuning for "how many people are in frame" (face-metrics.ts). Defaults
+   * suit every device we have measured; override only on support advice.
+   */
+  faceSelection?: Partial<FaceSelectionConfig>;
 }
 
 /** Frontal gate for a good selfie snapshot. */
@@ -68,6 +79,12 @@ const MANUAL_FALLBACK_MS = 4_000;
 const SELFIE_CROP_MARGIN = 0.4;
 /** Downscale width for the cheap per-frame sharpness analysis crop. */
 const ANALYSIS_CROP_WIDTH = 160;
+/**
+ * A second face must survive this many CONSECUTIVE frames before it blocks
+ * the snap — face detectors emit the occasional single-frame phantom
+ * (see face-metrics.ts). Mirrors the challenge machine's `multiFaceFrames`.
+ */
+const MULTI_FACE_FRAMES = 5;
 
 const STATE_MESSAGE_KEY: Record<FaceCaptureState, string> = {
   initializing: 'initializing',
@@ -118,6 +135,7 @@ class FaceCaptureSession {
   private camera: CameraController | null = null;
   private landmarker: FaceLandmarkerLike | null = null;
   private rafId: number | null = null;
+  private multiFaceStreak = 0;
   private manualTimer: ReturnType<typeof setTimeout> | null = null;
   private finished = false;
   private state: FaceCaptureState = 'initializing';
@@ -199,17 +217,21 @@ class FaceCaptureSession {
 
     const result = landmarker.detectForVideo(video, performance.now()) as FaceLandmarkerResultLike;
     const oval = computeOvalGuide(video.videoWidth, video.videoHeight);
+    const selection = selectFaces(result, this.options.faceSelection);
     const obs = mapObservation(result, {
       frameWidth: video.videoWidth,
       frameHeight: video.videoHeight,
       ovalCenterX: oval.cx / video.videoWidth,
       ovalCenterY: oval.cy / video.videoHeight,
+      selection,
     });
 
-    this.considerBestFrame(result, obs, video);
+    this.considerBestFrame(selection, obs, video);
 
-    const frontal = this.isFrontal(obs);
-    const motionStable = this.updateMotion(result, obs);
+    this.multiFaceStreak = obs.count > 1 ? this.multiFaceStreak + 1 : 0;
+    const multiFace = this.multiFaceStreak >= MULTI_FACE_FRAMES;
+    const frontal = this.isFrontal(obs, multiFace);
+    const motionStable = this.updateMotion(selection, obs, multiFace);
     const now = performance.now();
     if (frontal && motionStable) {
       if (this.holdSince === null) this.holdSince = now;
@@ -218,14 +240,15 @@ class FaceCaptureSession {
     }
     const held = this.holdSince !== null && now - this.holdSince >= HOLD_MS;
 
-    this.render(obs, frontal, oval);
+    this.render(obs, frontal, multiFace, oval);
 
     if (held) void this.capture();
   };
 
-  private isFrontal(obs: FaceObservation): boolean {
+  private isFrontal(obs: FaceObservation, multiFace: boolean): boolean {
     return (
-      obs.count === 1 &&
+      obs.count >= 1 &&
+      !multiFace &&
       Math.abs(obs.yawDeg) < FRONTAL_MAX_YAW_DEG &&
       Math.abs(obs.pitchDeg) < FRONTAL_MAX_PITCH_DEG &&
       obs.faceWidthFrac >= MIN_FACE_WIDTH_FRAC &&
@@ -238,15 +261,19 @@ class FaceCaptureSession {
   /**
    * Motion-stability: the face box must not drift more than
    * `MAX_MOTION_DRIFT_FRAC` (normalized) vs the previous frame. Updates the
-   * reference box. A missing / multi-face frame resets the reference and is
-   * never stable.
+   * reference box. A frame with no face, or with a confirmed second person,
+   * resets the reference and is never stable.
    */
-  private updateMotion(result: FaceLandmarkerResultLike, obs: FaceObservation): boolean {
-    if (obs.count !== 1) {
+  private updateMotion(
+    selection: FaceSelection,
+    obs: FaceObservation,
+    multiFace: boolean,
+  ): boolean {
+    if (obs.count < 1 || multiFace) {
       this.motionRef = null;
       return false;
     }
-    const bbox = faceBoundingBox(result);
+    const bbox = selection.box;
     if (!bbox) {
       this.motionRef = null;
       return false;
@@ -275,12 +302,12 @@ class FaceCaptureSession {
    * resolution (identical to the active-liveness best-frame logic).
    */
   private considerBestFrame(
-    result: FaceLandmarkerResultLike,
+    selection: FaceSelection,
     obs: FaceObservation,
     video: HTMLVideoElement,
   ): void {
     if (!this.selector.isCandidate(obs) || !this.analysisCanvas) return;
-    const bbox = faceBoundingBox(result);
+    const bbox = selection.box;
     if (!bbox) return;
     const vw = video.videoWidth;
     const vh = video.videoHeight;
@@ -321,6 +348,7 @@ class FaceCaptureSession {
   private render(
     obs: FaceObservation,
     frontal: boolean,
+    multiFace: boolean,
     oval: ReturnType<typeof computeOvalGuide>,
   ): void {
     if (this.state === 'capturing' || this.state === 'done') return;
@@ -329,7 +357,7 @@ class FaceCaptureSession {
     if (obs.count === 0) {
       state = 'searching';
       messageKey = 'center_face';
-    } else if (obs.count > 1) {
+    } else if (multiFace) {
       state = 'searching';
       messageKey = 'multiple_faces';
     } else if (obs.faceWidthFrac < MIN_FACE_WIDTH_FRAC) {

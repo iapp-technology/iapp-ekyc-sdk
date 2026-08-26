@@ -97,11 +97,16 @@ export {
   type BestFrameSelectorConfig,
 } from './active-liveness/best-frame-selector';
 export {
+  DEFAULT_FACE_SELECTION_CONFIG,
   eulerFromMatrix,
   faceBoundingBox,
   mapObservation,
+  selectFaces,
   type EulerAngles,
+  type FaceBox,
   type FaceLandmarkerResultLike,
+  type FaceSelection,
+  type FaceSelectionConfig,
   type MapObservationOptions,
 } from './active-liveness/face-metrics';
 export {

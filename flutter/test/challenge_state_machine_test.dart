@@ -73,6 +73,20 @@ const _twoFaces = FaceObservation(
   centerOffsetFrac: 0.05,
 );
 
+/// Identical to `_good` except for the face count — so a test can vary the
+/// count alone, with no side effect on challenge progress.
+const _twoFacesOtherwiseGood = FaceObservation(
+  count: 2,
+  yawDeg: 0,
+  pitchDeg: 0,
+  leftEyeOpen: 0.95,
+  rightEyeOpen: 0.95,
+  smile: 0,
+  faceWidthFrac: 0.4,
+  centerOffsetFrac: 0.05,
+  trackingId: 7,
+);
+
 // ---------------------------------------------------------------------
 // Harness with an injectable clock (10 fps default cadence)
 // ---------------------------------------------------------------------
@@ -93,6 +107,18 @@ class Harness {
   LivenessUpdate tick(FaceObservation obs, {int advanceMs = 100}) {
     now += advanceMs;
     return machine.process(obs);
+  }
+
+  /// Feeds `multiFaceFrames` two-face frames — the debounce threshold.
+  LivenessUpdate sustainedTwoFaces({
+    int frames = 5,
+    FaceObservation obs = _twoFaces,
+  }) {
+    LivenessUpdate? update;
+    for (var i = 0; i < frames; i++) {
+      update = tick(obs);
+    }
+    return update!;
   }
 
   /// Feeds good frontal frames through findFace until a challenge issues.
@@ -285,12 +311,12 @@ void main() {
     expect(h.machine.log, hasLength(1));
   });
 
-  test('two faces mid-challenge restarts the challenge', () {
+  test('two faces mid-challenge restart the challenge', () {
     final h = Harness(config: _blinkOnly);
     h.passFindFace();
 
     h.tick(_eyesClosed); // Half-way through the blink.
-    final restart = h.tick(_twoFaces);
+    final restart = h.sustainedTwoFaces();
     expect(restart.event, LivenessEvent.challengeRestarted);
     expect(h.machine.restartsOfCurrentChallenge, 1);
     expect(h.machine.phase, LivenessPhase.challenge);
@@ -305,17 +331,42 @@ void main() {
     expect(h.machine.log, hasLength(1));
   });
 
+  test('a phantom second face does NOT restart the challenge', () {
+    // Field report (Galaxy S25 Ultra, Aug 2026): a detector phantom that
+    // appears for a frame or two must not restart — three restarts fail
+    // the whole session.
+    final h = Harness(config: _blinkOnly);
+    h.passFindFace();
+
+    for (var i = 0; i < 6; i++) {
+      // below the debounce threshold ...
+      h.sustainedTwoFaces(frames: 4, obs: _twoFacesOtherwiseGood);
+      h.tick(_good); // ... and the streak resets on a clean frame
+    }
+    expect(h.machine.restartsOfCurrentChallenge, 0);
+    expect(h.machine.phase, LivenessPhase.challenge);
+  });
+
+  test('a sustained second face restarts once per streak, not per frame', () {
+    final h = Harness(config: _blinkOnly);
+    h.passFindFace();
+
+    h.sustainedTwoFaces(frames: 20);
+    expect(h.machine.restartsOfCurrentChallenge, 1);
+    expect(h.machine.phase, LivenessPhase.challenge);
+  });
+
   test('3 restarts of one challenge fails the session', () {
     final h = Harness(config: _blinkOnly);
     h.passFindFace();
 
-    h.tick(_twoFaces);
+    h.sustainedTwoFaces();
     expect(h.machine.phase, LivenessPhase.challenge);
     h.tick(_good);
-    h.tick(_twoFaces);
+    h.sustainedTwoFaces();
     expect(h.machine.phase, LivenessPhase.challenge);
     h.tick(_good);
-    final third = h.tick(_twoFaces);
+    final third = h.sustainedTwoFaces();
     expect(third.event, LivenessEvent.failed);
     expect(h.machine.phase, LivenessPhase.failed);
     expect(h.machine.failureReason, LivenessFailureReason.tooManyRestarts);

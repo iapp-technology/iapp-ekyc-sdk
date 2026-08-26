@@ -13,6 +13,7 @@
  * - eyeOpen = 1 - eyeBlink{Left,Right}; smile = max(mouthSmileLeft/Right)
  *   (max, not mean: natural smiles are often asymmetric and the mean
  *   under-reports them).
+ * - `count` is NOT the raw detector output: see selectFaces() below.
  */
 import type { FaceObservation } from './challenge-machine';
 
@@ -91,12 +92,131 @@ function blendshapeScore(
   return 0;
 }
 
+/** Face bounding box in normalized (0..1) frame coordinates. */
+export interface FaceBox {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/**
+ * Tuning for turning the detector's face list into "how many PEOPLE are in
+ * front of the camera".
+ *
+ * The landmarker runs with numFaces = 2 so a second person can be seen at
+ * all, which means the underlying detector keeps scanning the frame for a
+ * second face on every frame. On wide-FOV, high-resolution front cameras
+ * (Galaxy S25 Ultra and similar) that scan regularly returns a phantom:
+ * either the subject's own face boxed a second time, or a small face-like
+ * pattern in the background. Left unfiltered, the phantom pins the UI on
+ * "only one face may be in view" and the flow can never start.
+ */
+export interface FaceSelectionConfig {
+  /** Secondary detections narrower than this fraction of the FRAME are noise. */
+  minFaceWidthFrac: number;
+  /** intersection / min(area) at or above this = the SAME face, twice. */
+  duplicateOverlap: number;
+  /** A real second subject is at least this fraction of the primary's width. */
+  minSecondaryWidthRatio: number;
+}
+
+export const DEFAULT_FACE_SELECTION_CONFIG: FaceSelectionConfig = {
+  minFaceWidthFrac: 0.06,
+  duplicateOverlap: 0.3,
+  minSecondaryWidthRatio: 0.4,
+};
+
+export interface FaceSelection {
+  /** Index of the subject's face in the result, or -1 when there is none. */
+  index: number;
+  /** Bounding box of the subject's face (normalized), or null. */
+  box: FaceBox | null;
+  /** People in frame: the subject plus every surviving second face. */
+  count: number;
+  /** Faces the detector reported, before filtering (diagnostics only). */
+  rawCount: number;
+}
+
+/** Normalized bounding box of one landmark set; null if degenerate. */
+function boundingBoxOf(
+  landmarks: Array<{ x: number; y: number }> | undefined,
+): FaceBox | null {
+  if (!landmarks || landmarks.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of landmarks) {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  if (maxX <= minX || maxY <= minY) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+/** intersection area / smaller box area (0..1). Nest-aware, unlike IoU. */
+function overlapRatio(a: FaceBox, b: FaceBox): number {
+  const w = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX);
+  const h = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY);
+  if (w <= 0 || h <= 0) return 0;
+  const areaA = (a.maxX - a.minX) * (a.maxY - a.minY);
+  const areaB = (b.maxX - b.minX) * (b.maxY - b.minY);
+  const smaller = Math.min(areaA, areaB);
+  return smaller > 0 ? (w * h) / smaller : 0;
+}
+
+/**
+ * Pick the subject's face (the largest — the person holding the phone) and
+ * count how many OTHER faces are genuinely a second person: big enough to
+ * matter, and not just the subject's own face detected a second time.
+ *
+ * Dropping a detection only ever makes the flow more permissive on the
+ * "one face" rule; it never affects the server-side verdict, which is the
+ * only proof of liveness (docs/SECURITY.md).
+ */
+export function selectFaces(
+  result: FaceLandmarkerResultLike,
+  config: Partial<FaceSelectionConfig> = {},
+): FaceSelection {
+  const cfg = { ...DEFAULT_FACE_SELECTION_CONFIG, ...config };
+  const faces = result.faceLandmarks ?? [];
+  const boxes: Array<{ index: number; box: FaceBox; width: number; area: number }> = [];
+  for (let i = 0; i < faces.length; i++) {
+    const box = boundingBoxOf(faces[i]);
+    if (!box) continue;
+    const width = box.maxX - box.minX;
+    boxes.push({ index: i, box, width, area: width * (box.maxY - box.minY) });
+  }
+  if (boxes.length === 0) return { index: -1, box: null, count: 0, rawCount: faces.length };
+
+  let primary = boxes[0];
+  for (const b of boxes) if (b.area > primary.area) primary = b;
+
+  let count = 1;
+  for (const b of boxes) {
+    if (b === primary) continue;
+    if (b.width < cfg.minFaceWidthFrac) continue; // detector noise
+    if (b.width < primary.width * cfg.minSecondaryWidthRatio) continue; // far background
+    if (overlapRatio(b.box, primary.box) >= cfg.duplicateOverlap) continue; // same face twice
+    count += 1;
+  }
+  return { index: primary.index, box: primary.box, count, rawCount: faces.length };
+}
+
 export interface MapObservationOptions {
   frameWidth: number;
   frameHeight: number;
   /** Oval guide center in NORMALIZED (0..1) frame coordinates. Default center. */
   ovalCenterX?: number;
   ovalCenterY?: number;
+  /** Reuse a selection already computed for this frame. */
+  selection?: FaceSelection;
+  /** Face-filter tuning. Ignored when `selection` is supplied. */
+  faceSelection?: Partial<FaceSelectionConfig>;
 }
 
 const EMPTY_OBSERVATION: FaceObservation = {
@@ -109,25 +229,18 @@ const EMPTY_OBSERVATION: FaceObservation = {
   smile: 0,
   faceWidthFrac: 0,
   centerOffsetFrac: 1,
+  rawFaceCount: 0,
 };
 
-/** Normalized-landmark bounding box of face 0 (all coords 0..1). */
+/**
+ * Bounding box of the SUBJECT's face (the largest one), in normalized
+ * coordinates. Pass a selection to avoid recomputing it.
+ */
 export function faceBoundingBox(
   result: FaceLandmarkerResultLike,
-): { minX: number; minY: number; maxX: number; maxY: number } | null {
-  const landmarks = result.faceLandmarks[0];
-  if (!landmarks || landmarks.length === 0) return null;
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const p of landmarks) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
-  }
-  return { minX, minY, maxX, maxY };
+  selection?: FaceSelection,
+): FaceBox | null {
+  return (selection ?? selectFaces(result)).box;
 }
 
 /** Map one FaceLandmarker result to a FaceObservation. */
@@ -135,11 +248,11 @@ export function mapObservation(
   result: FaceLandmarkerResultLike,
   options: MapObservationOptions,
 ): FaceObservation {
-  const count = result.faceLandmarks.length;
-  if (count === 0) return { ...EMPTY_OBSERVATION };
-
-  const bbox = faceBoundingBox(result);
-  if (!bbox) return { ...EMPTY_OBSERVATION };
+  const selection = options.selection ?? selectFaces(result, options.faceSelection);
+  const bbox = selection.box;
+  if (selection.index < 0 || !bbox) {
+    return { ...EMPTY_OBSERVATION, rawFaceCount: selection.rawCount };
+  }
 
   const faceWidthFrac = bbox.maxX - bbox.minX;
   const cx = (bbox.minX + bbox.maxX) / 2;
@@ -154,7 +267,10 @@ export function mapObservation(
   let yawDeg = 0;
   let pitchDeg = 0;
   let rollDeg = 0;
-  const matrix = result.facialTransformationMatrixes[0];
+  // Blendshapes and the transformation matrix are indexed in lockstep with
+  // faceLandmarks, so every per-face read uses the SUBJECT's index — never
+  // slot 0, which a phantom detection can occupy.
+  const matrix = result.facialTransformationMatrixes[selection.index];
   if (matrix && matrix.data.length >= 16) {
     const euler = eulerFromMatrix(matrix.data);
     yawDeg = euler.yawDeg;
@@ -162,7 +278,7 @@ export function mapObservation(
     rollDeg = euler.rollDeg;
   }
 
-  const categories = result.faceBlendshapes[0]?.categories;
+  const categories = result.faceBlendshapes[selection.index]?.categories;
   const leftEyeOpen = 1 - blendshapeScore(categories, 'eyeBlinkLeft');
   const rightEyeOpen = 1 - blendshapeScore(categories, 'eyeBlinkRight');
   const smile = Math.max(
@@ -171,7 +287,7 @@ export function mapObservation(
   );
 
   return {
-    count,
+    count: selection.count,
     yawDeg,
     pitchDeg,
     rollDeg,
@@ -180,5 +296,6 @@ export function mapObservation(
     smile,
     faceWidthFrac,
     centerOffsetFrac,
+    rawFaceCount: selection.rawCount,
   };
 }

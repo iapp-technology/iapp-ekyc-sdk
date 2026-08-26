@@ -167,6 +167,27 @@ describe('ChallengeMachine — happy path', () => {
     expect(rig.machine.state.phase).toBe('findFace');
   });
 
+  it('a sustained second face blocks findFace', () => {
+    const rig = makeRig();
+    rig.machine.start();
+    rig.frames(face({ count: 2 }), 25);
+    expect(rig.machine.state.phase).toBe('findFace');
+    expect(rig.machine.state.multiFace).toBe(true);
+  });
+
+  it('phantom second-face frames do NOT stall findFace', () => {
+    // The Galaxy S25 Ultra report (Aug 2026): a detector phantom appearing
+    // for a frame or two at a time must not hold the user on
+    // "only one face may be in view" forever.
+    const rig = makeRig();
+    rig.machine.start();
+    for (let i = 0; i < 10; i++) {
+      rig.frame(face({ count: 2 }));
+      rig.frame(face());
+    }
+    expect(rig.machine.state.phase).toBe('challenge');
+  });
+
   it('draws distinct challenges from the pool', () => {
     for (let seed = 0; seed < 20; seed++) {
       const clock = makeClock();
@@ -361,11 +382,29 @@ describe('ChallengeMachine — anti-cheat', () => {
     expect(rig.machine.state.restarts).toBe(0);
   });
 
-  it('multiple faces restart immediately', () => {
+  it('a sustained second face restarts the challenge', () => {
     const rig = startedChallenge();
-    rig.frame(face({ count: 2 }));
+    rig.frames(face({ count: 2 }), 5); // multiFaceFrames
     expect(rig.machine.state.restarts).toBe(1);
     expect(rig.machine.state.phase).toBe('challenge');
+  });
+
+  it('a phantom second face (< 5 frames) does NOT restart', () => {
+    const rig = startedChallenge();
+    for (let i = 0; i < 6; i++) {
+      rig.frames(face({ count: 2 }), 4); // 4 phantom frames ...
+      rig.frame(face()); // ... broken by a clean one: the streak resets
+    }
+    expect(rig.machine.state.restarts).toBe(0);
+    expect(rig.machine.state.multiFace).toBe(false);
+    expect(rig.machine.state.phase).toBe('challenge');
+  });
+
+  it('reports multiFace once the streak is confirmed', () => {
+    const rig = startedChallenge();
+    expect(rig.frame(face({ count: 2 })).multiFace).toBe(false);
+    rig.frames(face({ count: 2 }), 4); // 5 consecutive frames in total
+    expect(rig.machine.state.multiFace).toBe(true);
   });
 
   it('3 restarts of one challenge fail the session', () => {

@@ -160,8 +160,9 @@ class _ActiveLivenessViewState extends State<ActiveLivenessView> {
     // candidate ever qualified.
     if (update.phase == LivenessPhase.recenter &&
         !_selector.hasCandidate &&
-        faces.length == 1) {
-      _fallbackFrame = _copyFrame(frame, faces.first.boundingBox);
+        obs.count == 1 &&
+        faces.isNotEmpty) {
+      _fallbackFrame = _copyFrame(frame, subjectFace(faces)!.boundingBox);
     }
 
     if (update.instructionKey != _instructionKey && mounted) {
@@ -186,7 +187,7 @@ class _ActiveLivenessViewState extends State<ActiveLivenessView> {
     List<Face> faces,
     FaceObservation obs,
   ) {
-    final box = faces.first.boundingBox;
+    final box = subjectFace(faces)!.boundingBox;
     double sharpness;
     cv.Mat? gray;
     cv.Mat? upright;
