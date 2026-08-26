@@ -116,6 +116,11 @@ export {
   type LoadFaceLandmarkerOptions,
 } from './active-liveness/mediapipe-loader';
 export {
+  clearCpuPin,
+  persistCpuPin,
+  readPersistedCpuPin,
+} from './active-liveness/delegate-preference';
+export {
   FaceCapture,
   type FaceCaptureState,
   type FaceCaptureStartOptions,

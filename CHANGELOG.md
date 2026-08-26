@@ -3,6 +3,33 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.5] — 2026-08-26
+
+### Fixed
+- **CPU-delegate recovery now engages fast enough to matter.** The field
+  device's facecheck report showed the broken GPU path is also SLOW (~7
+  frames in ~8 s), so 0.2.4's 15-consecutive-frame trigger would have taken
+  15+ seconds — indistinguishable from a hang. Recovery now also fires
+  after 3+ unusable frames spanning 2 seconds, whichever comes first.
+
+### Added
+- **Persisted delegate preference** (`delegate-preference.ts`): once a
+  session proves the CPU fallback works where the GPU delegate emits
+  garbage, the preference is stored (localStorage, best-effort, guarded for
+  WebViews that deny storage) and later sessions start straight on the CPU
+  delegate — no per-session recovery delay. A pinned session that still
+  gets garbage clears the pin (a driver update may have fixed the GPU) and
+  fails with the typed error. Exports: `readPersistedCpuPin`,
+  `persistCpuPin`, `clearCpuPin`.
+- **facecheck page revision 2 — two-phase.** The previous page only tested
+  the default delegate, so on a GPU-garbage device it reported "blocked on
+  100% of frames" even though the real flow would switch to CPU — alarming
+  and wrong. It now runs the default order and then the CPU delegate
+  (~9 s each), reports per-delegate gate results, includes the WebGL
+  renderer string and the persisted-pin state, and its conclusion states
+  directly whether the automatic fallback rescues the device. Also fixes a
+  double-tap race that could start two concurrent runs.
+
 ## [web 0.2.4] — 2026-08-26
 
 ### Fixed

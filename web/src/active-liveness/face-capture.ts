@@ -13,6 +13,7 @@
  */
 import { CameraController } from '../core/camera';
 import { CancelledError, EkycError, FaceDetectorUnavailableError } from '../core/errors';
+import { clearCpuPin, persistCpuPin, readPersistedCpuPin } from './delegate-preference';
 import { createTranslator, type Locale, type Translator } from '../core/i18n/i18n';
 import { applyTheme, type EkycTheme } from '../core/theme';
 import {
@@ -86,11 +87,13 @@ const ANALYSIS_CROP_WIDTH = 160;
  */
 const MULTI_FACE_FRAMES = 5;
 /**
- * Consecutive frames of unusable detector output (running, but every
- * landmark set numerically impossible) before rebuilding on the CPU
- * delegate. Mirrors the active-liveness recovery.
+ * Unusable detector output triggers a rebuild on the CPU delegate after 15
+ * consecutive frames — or after 3+ unusable frames spanning 2 seconds,
+ * because a broken GPU path can also be slow. Mirrors active-liveness.ts.
  */
 const UNUSABLE_FRAMES_BEFORE_CPU_RETRY = 15;
+const UNUSABLE_MIN_FRAMES = 3;
+const UNUSABLE_MAX_WAIT_MS = 2000;
 
 const STATE_MESSAGE_KEY: Record<FaceCaptureState, string> = {
   initializing: 'initializing',
@@ -143,8 +146,12 @@ class FaceCaptureSession {
   private rafId: number | null = null;
   private multiFaceStreak = 0;
   private unusableStreak = 0;
+  private unusableSinceMs = 0;
   private triedCpuDelegate = false;
   private swappingDelegate = false;
+  private recoveredToCpu = false;
+  private cpuPinWasUsed = false;
+  private cpuPinStored = false;
   private manualTimer: ReturnType<typeof setTimeout> | null = null;
   private finished = false;
   private state: FaceCaptureState = 'initializing';
@@ -188,11 +195,18 @@ class FaceCaptureSession {
       this.setState('initializing');
 
       this.camera = new CameraController();
+      // Devices that proved their GPU delegate broken start on CPU.
+      const pinnedCpu = readPersistedCpuPin();
+      if (pinnedCpu) {
+        this.triedCpuDelegate = true;
+        this.cpuPinWasUsed = true;
+      }
       const [, landmarker] = await Promise.all([
         this.camera.open(this.overlay.video, { facingMode: 'user' }),
         loadFaceLandmarker({
           assetBaseUrl: this.options.assetBaseUrl,
           modelUrl: this.options.modelUrl,
+          delegate: pinnedCpu ? 'CPU' : undefined,
         }),
       ]);
       if (this.finished) return; // cancelled while starting up
@@ -238,13 +252,23 @@ class FaceCaptureSession {
     // Detector running but returning impossible coordinates: retry on the
     // CPU delegate once, then surface a real error (see active-liveness.ts).
     if (selection.rejected > 0 && selection.count === 0) {
+      const now = performance.now();
+      if (this.unusableStreak === 0) this.unusableSinceMs = now;
       this.unusableStreak += 1;
-      if (this.unusableStreak >= UNUSABLE_FRAMES_BEFORE_CPU_RETRY) {
+      const giveUpOnThisDelegate =
+        this.unusableStreak >= UNUSABLE_FRAMES_BEFORE_CPU_RETRY ||
+        (this.unusableStreak >= UNUSABLE_MIN_FRAMES &&
+          now - this.unusableSinceMs >= UNUSABLE_MAX_WAIT_MS);
+      if (giveUpOnThisDelegate) {
         void this.recoverFromUnusableDetector();
         return;
       }
     } else if (selection.count > 0) {
       this.unusableStreak = 0;
+      if (this.recoveredToCpu && !this.cpuPinStored) {
+        this.cpuPinStored = true;
+        persistCpuPin();
+      }
     }
 
     this.considerBestFrame(selection, obs, video);
@@ -270,6 +294,7 @@ class FaceCaptureSession {
   private async recoverFromUnusableDetector(): Promise<void> {
     if (this.swappingDelegate || this.finished) return;
     if (this.triedCpuDelegate) {
+      if (this.cpuPinWasUsed) clearCpuPin();
       this.fail(new FaceDetectorUnavailableError());
       return;
     }
@@ -284,6 +309,7 @@ class FaceCaptureSession {
       });
       if (this.finished) return;
       this.landmarker = cpu;
+      this.recoveredToCpu = true;
     } catch (e) {
       this.fail(new FaceDetectorUnavailableError(undefined, { cause: e }));
     } finally {

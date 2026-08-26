@@ -69,9 +69,15 @@ face box of width 1.37e12 into the centring check and pinned the flow on
 
 `rejected > 0 && count === 0` — the detector is running, everything it
 returns is unusable — makes the flow **rebuild the landmarker on the CPU
-delegate** after `UNUSABLE_FRAMES_BEFORE_CPU_RETRY` (15) consecutive
-frames, once per session. If the CPU delegate is no better, the session
-fails with `FaceDetectorUnavailableError` (bridge code
+delegate**: after `UNUSABLE_FRAMES_BEFORE_CPU_RETRY` (15) consecutive
+frames, or after 3+ unusable frames spanning 2 s (a broken GPU path can
+also be slow — the field device produced under 1 fps of garbage, which
+would have stretched a frame-count-only trigger past 15 s). Once the CPU
+delegate then produces a usable face, the preference is **persisted**
+(`delegate-preference.ts`, localStorage, best-effort) so later sessions on
+that device start straight on CPU; the pin is cleared if a pinned session
+still gets garbage. If the CPU delegate is no better, the session fails
+with `FaceDetectorUnavailableError` (bridge code
 `FACE_DETECTOR_UNAVAILABLE`) so the host app's error callback fires. The
 loader caches one instance **per delegate** — a CPU reload must never hand
 back the broken GPU instance.

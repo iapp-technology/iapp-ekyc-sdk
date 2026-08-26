@@ -17,6 +17,7 @@ import {
   FaceDetectorUnavailableError,
   LivenessFailedError,
 } from '../core/errors';
+import { clearCpuPin, persistCpuPin, readPersistedCpuPin } from './delegate-preference';
 import { createTranslator, type Locale, type Translator } from '../core/i18n/i18n';
 import { applyTheme, type EkycTheme } from '../core/theme';
 import type { ActiveLivenessResult, SdkIntegration } from '../core/types';
@@ -51,13 +52,17 @@ const SELFIE_CROP_MARGIN = 0.4;
 /** Downscale width for the sharpness analysis crop (perf only). */
 const ANALYSIS_CROP_WIDTH = 160;
 /**
- * Consecutive frames of unusable detector output (running, but every
- * landmark set numerically impossible) before rebuilding the landmarker on
- * the CPU delegate. Half a second at 30 fps — long enough not to fire on a
- * startup hiccup, short enough that the user is not left staring at a hint
- * they cannot act on.
+ * Unusable detector output (running, but every landmark set numerically
+ * impossible) triggers a rebuild on the CPU delegate after 15 consecutive
+ * frames — or, because a broken GPU path can also be SLOW (a field device
+ * produced under 1 fps of garbage), after 3+ unusable frames spanning 2
+ * seconds, whichever comes first. Long enough not to fire on a startup
+ * hiccup, short enough that the user is not left staring at a hint they
+ * cannot act on.
  */
 const UNUSABLE_FRAMES_BEFORE_CPU_RETRY = 15;
+const UNUSABLE_MIN_FRAMES = 3;
+const UNUSABLE_MAX_WAIT_MS = 2000;
 
 const CHALLENGE_MESSAGE_KEY: Record<ChallengeType, string> = {
   blink: 'blink_now',
@@ -133,8 +138,12 @@ class LivenessSession {
   private analysisCanvas: HTMLCanvasElement | null = null;
   private bestCanvas: HTMLCanvasElement | null = null;
   private unusableStreak = 0;
+  private unusableSinceMs = 0;
   private triedCpuDelegate = false;
   private swappingDelegate = false;
+  private recoveredToCpu = false;
+  private cpuPinWasUsed = false;
+  private cpuPinStored = false;
 
   constructor(
     api: EkycApiClient,
@@ -160,11 +169,19 @@ class LivenessSession {
       this.overlay.chip.textContent = this.t('initializing');
 
       this.camera = new CameraController();
+      // A device that previously proved its GPU delegate emits garbage
+      // starts straight on the CPU delegate (delegate-preference.ts).
+      const pinnedCpu = readPersistedCpuPin();
+      if (pinnedCpu) {
+        this.triedCpuDelegate = true;
+        this.cpuPinWasUsed = true;
+      }
       const [, landmarker] = await Promise.all([
         this.camera.open(this.overlay.video, { facingMode: 'user' }),
         loadFaceLandmarker({
           assetBaseUrl: this.options.assetBaseUrl,
           modelUrl: this.options.modelUrl,
+          delegate: pinnedCpu ? 'CPU' : undefined,
         }),
       ]);
       if (this.finished) return;
@@ -212,13 +229,25 @@ class LivenessSession {
     // flow shows a hint the user cannot act on, forever, and never calls
     // back (field report, Galaxy S25 Ultra, Aug 2026).
     if (selection.rejected > 0 && selection.count === 0) {
+      const now = performance.now();
+      if (this.unusableStreak === 0) this.unusableSinceMs = now;
       this.unusableStreak += 1;
-      if (this.unusableStreak >= UNUSABLE_FRAMES_BEFORE_CPU_RETRY) {
+      const giveUpOnThisDelegate =
+        this.unusableStreak >= UNUSABLE_FRAMES_BEFORE_CPU_RETRY ||
+        (this.unusableStreak >= UNUSABLE_MIN_FRAMES &&
+          now - this.unusableSinceMs >= UNUSABLE_MAX_WAIT_MS);
+      if (giveUpOnThisDelegate) {
         void this.recoverFromUnusableDetector();
         return;
       }
     } else if (selection.count > 0) {
       this.unusableStreak = 0;
+      // The CPU delegate proved itself after a garbage GPU run: remember it
+      // so future sessions on this device skip the broken delegate.
+      if (this.recoveredToCpu && !this.cpuPinStored) {
+        this.cpuPinStored = true;
+        persistCpuPin();
+      }
     }
 
     this.options.onObservation?.(obs);
@@ -242,6 +271,10 @@ class LivenessSession {
   private async recoverFromUnusableDetector(): Promise<void> {
     if (this.swappingDelegate || this.finished) return;
     if (this.triedCpuDelegate) {
+      // The CPU delegate is broken too. If we started pinned to it, drop
+      // the pin so the next session retries the GPU (a driver update may
+      // have fixed it) — then surface a real error instead of hanging.
+      if (this.cpuPinWasUsed) clearCpuPin();
       this.fail(new FaceDetectorUnavailableError());
       return;
     }
@@ -256,6 +289,7 @@ class LivenessSession {
       });
       if (this.finished) return;
       this.landmarker = cpu;
+      this.recoveredToCpu = true;
     } catch (e) {
       this.fail(new FaceDetectorUnavailableError(undefined, { cause: e }));
     } finally {
