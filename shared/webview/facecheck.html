@@ -147,6 +147,16 @@
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // The same oval guide the real flow shows (overlay.ts computeOvalGuide),
+    // so the user has something to centre on and the off-centre counter
+    // means what it means in the flow.
+    var W = canvas.width, H = canvas.height;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = Math.max(2, W / 240);
+    ctx.beginPath();
+    ctx.ellipse(W * 0.5, H * 0.45, Math.min(W * 0.3, H * 0.28),
+      Math.min(W * 0.42, H * 0.38), 0, 0, Math.PI * 2);
+    ctx.stroke();
     ctx.lineWidth = Math.max(2, canvas.width / 200);
     ctx.font = 'bold ' + Math.round(canvas.width / 28) + 'px sans-serif';
     for (var i = 0; i < boxes.length; i++) {
@@ -172,6 +182,19 @@
 
   function okPct(s) { return s && s.frames ? (100 * s.ok / s.frames) : 0; }
 
+  /**
+   * A delegate is BROKEN when it mostly emits numerically impossible
+   * output. Centring / size / no-face are user-positioning outcomes, not
+   * detector health -- a field report was mis-read because a healthy CPU
+   * phase (sane coordinates, face slightly low with no oval to aim at) was
+   * lumped into "unusable".
+   */
+  function delegateBroken(s) {
+    if (!s || s.error) return true;
+    if (!s.frames) return true;
+    return s.unusable / s.frames >= 0.5;
+  }
+
   function phaseLine(phase) {
     var s = stats[phase.key];
     if (!s) return '[' + phase.label + '] not run';
@@ -190,13 +213,22 @@
     var a = stats['default'];
     var b = stats['cpu'];
     if (!a || !b) return 'incomplete run';
-    if (okPct(a) >= 80) {
-      return 'The default mode works on this device. The eKYC flow proceeds normally.';
+    var centringNote = '';
+    var healthy = !delegateBroken(a) ? a : (!delegateBroken(b) ? b : null);
+    if (healthy && okPct(healthy) < 80 && (healthy.offCentre + healthy.tooSmall) > 0) {
+      centringNote = ' (Positioning hints above are about where the face sat during ' +
+        'this check, not about the detector; the real flow guides the user with the oval.)';
     }
-    if (okPct(b) >= 80) {
-      return 'GPU inference is faulty on this device, but the CPU fallback works. ' +
-        'The SDK switches to it automatically, so the eKYC flow should complete here. ' +
-        'If the flow still fails, send this report to sale@iapp.co.th.';
+    if (!delegateBroken(a)) {
+      return 'The default mode is healthy on this device. The eKYC flow proceeds normally.' +
+        centringNote;
+    }
+    if (!delegateBroken(b)) {
+      return 'GPU inference is faulty on this device, but the CPU fallback is healthy ' +
+        '(coordinates are sane). The SDK switches to it automatically, so the eKYC flow ' +
+        'should complete here. If the flow in an APP still fails while the browser demo ' +
+        'works, the app WebView is likely running a cached old engine -- clear the app ' +
+        'cache and retry.' + centringNote;
     }
     return 'BOTH modes returned unusable output on this device. The eKYC flow will ' +
       'report FACE_DETECTOR_UNAVAILABLE through onError. Send this report to sale@iapp.co.th.';
@@ -212,7 +244,7 @@
     var lines = [
       'iApp eKYC face detector self-check',
       'engine: ' + (window.IappEkyc && window.IappEkyc.SDK_VERSION),
-      'page: facecheck/2',
+      'page: facecheck/3',
       'userAgent: ' + navigator.userAgent,
       'webgl: ' + webglRenderer(),
       'persisted cpu preference: ' + pin,

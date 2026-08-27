@@ -3,6 +3,23 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [facecheck/3] — 2026-08-27
+
+### Fixed
+- **The verdict misread a healthy CPU delegate as broken.** The field
+  device's rev-2 report showed the CPU phase returning sane coordinates
+  (raw=1, widthFrac 0.49, offset 0.147) — the detector was healthy; the
+  face simply sat slightly low because the page drew no oval to aim at.
+  The conclusion nevertheless said "BOTH modes returned unusable output".
+  Delegate health is now judged on output plausibility (unusable ratio),
+  with positioning outcomes reported separately; the page draws the same
+  oval guide as the real flow; and the fallback-healthy verdict explains
+  the app-cache trap (a WebView running a stale engine).
+- That report also confirmed the fix END TO END on the field device: the
+  browser demo now passes the scan, the persisted CPU pin reads `yes`, and
+  the WebGL renderer is `Qualcomm Adreno (TM) 830` (GPU coordinates now
+  ~1e17).
+
 ## [web 0.2.6] — 2026-08-26
 
 ### Added
