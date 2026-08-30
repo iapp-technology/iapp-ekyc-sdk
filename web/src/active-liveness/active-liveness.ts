@@ -63,6 +63,16 @@ const ANALYSIS_CROP_WIDTH = 160;
 const UNUSABLE_FRAMES_BEFORE_CPU_RETRY = 15;
 const UNUSABLE_MIN_FRAMES = 3;
 const UNUSABLE_MAX_WAIT_MS = 2000;
+/**
+ * Third failure shape: a delegate that returns NO faces, ever — not
+ * garbage, not an error (field device, 27 Aug 2026). Legitimate "user not
+ * in frame yet" looks identical for a while, so the CPU delegate is only
+ * tried after this long with at least NO_DETECTION_MIN_FRAMES processed
+ * frames and not one usable face. Harmless on a healthy device whose user
+ * is slow to line up: the swap is silent.
+ */
+const NO_DETECTION_CPU_RETRY_MS = 8000;
+const NO_DETECTION_MIN_FRAMES = 10;
 
 const CHALLENGE_MESSAGE_KEY: Record<ChallengeType, string> = {
   blink: 'blink_now',
@@ -139,6 +149,9 @@ class LivenessSession {
   private bestCanvas: HTMLCanvasElement | null = null;
   private unusableStreak = 0;
   private unusableSinceMs = 0;
+  private delegateStartedMs = 0;
+  private framesOnDelegate = 0;
+  private sawUsableFace = false;
   private triedCpuDelegate = false;
   private swappingDelegate = false;
   private recoveredToCpu = false;
@@ -186,6 +199,7 @@ class LivenessSession {
       ]);
       if (this.finished) return;
       this.landmarker = landmarker;
+      this.delegateStartedMs = performance.now();
 
       const video = this.overlay.video;
       this.overlay.canvas.width = video.videoWidth;
@@ -209,10 +223,16 @@ class LivenessSession {
     if (video.videoWidth === 0 || video.currentTime === this.lastVideoTime) return;
     this.lastVideoTime = video.currentTime;
 
-    const result = landmarker.detectForVideo(
-      video,
-      performance.now(),
-    ) as FaceLandmarkerResultLike;
+    let result: FaceLandmarkerResultLike;
+    try {
+      result = landmarker.detectForVideo(video, performance.now()) as FaceLandmarkerResultLike;
+    } catch {
+      // A broken GPU delegate can THROW on detect instead of returning
+      // garbage (same field device, a day later). Same treatment.
+      if (this.noteUnusableFrame()) void this.recoverFromUnusableDetector();
+      return;
+    }
+    this.framesOnDelegate += 1;
 
     const oval = computeOvalGuide(video.videoWidth, video.videoHeight);
     const selection = selectFaces(result, this.options.faceSelection);
@@ -229,25 +249,24 @@ class LivenessSession {
     // flow shows a hint the user cannot act on, forever, and never calls
     // back (field report, Galaxy S25 Ultra, Aug 2026).
     if (selection.rejected > 0 && selection.count === 0) {
-      const now = performance.now();
-      if (this.unusableStreak === 0) this.unusableSinceMs = now;
-      this.unusableStreak += 1;
-      const giveUpOnThisDelegate =
-        this.unusableStreak >= UNUSABLE_FRAMES_BEFORE_CPU_RETRY ||
-        (this.unusableStreak >= UNUSABLE_MIN_FRAMES &&
-          now - this.unusableSinceMs >= UNUSABLE_MAX_WAIT_MS);
-      if (giveUpOnThisDelegate) {
+      if (this.noteUnusableFrame()) {
         void this.recoverFromUnusableDetector();
         return;
       }
     } else if (selection.count > 0) {
       this.unusableStreak = 0;
+      this.sawUsableFace = true;
       // The CPU delegate proved itself after a garbage GPU run: remember it
       // so future sessions on this device skip the broken delegate.
       if (this.recoveredToCpu && !this.cpuPinStored) {
         this.cpuPinStored = true;
         persistCpuPin();
       }
+    }
+
+    if (this.shouldRetryAfterNoDetections()) {
+      void this.recoverFromUnusableDetector();
+      return;
     }
 
     this.options.onObservation?.(obs);
@@ -261,6 +280,28 @@ class LivenessSession {
       this.fail(new LivenessFailedError(snapshot.failReason ?? 'unknown'));
     }
   };
+
+  /** Track one unusable/throwing detector frame; true = give up on delegate. */
+  private noteUnusableFrame(): boolean {
+    const now = performance.now();
+    if (this.unusableStreak === 0) this.unusableSinceMs = now;
+    this.unusableStreak += 1;
+    return (
+      this.unusableStreak >= UNUSABLE_FRAMES_BEFORE_CPU_RETRY ||
+      (this.unusableStreak >= UNUSABLE_MIN_FRAMES &&
+        now - this.unusableSinceMs >= UNUSABLE_MAX_WAIT_MS)
+    );
+  }
+
+  /** The no-faces-ever fallback (see NO_DETECTION_CPU_RETRY_MS). */
+  private shouldRetryAfterNoDetections(): boolean {
+    return (
+      !this.triedCpuDelegate &&
+      !this.sawUsableFace &&
+      this.framesOnDelegate >= NO_DETECTION_MIN_FRAMES &&
+      performance.now() - this.delegateStartedMs >= NO_DETECTION_CPU_RETRY_MS
+    );
+  }
 
   /**
    * Rebuild the landmarker on the CPU delegate after the GPU one produced
@@ -290,6 +331,8 @@ class LivenessSession {
       if (this.finished) return;
       this.landmarker = cpu;
       this.recoveredToCpu = true;
+      this.delegateStartedMs = performance.now();
+      this.framesOnDelegate = 0;
     } catch (e) {
       this.fail(new FaceDetectorUnavailableError(undefined, { cause: e }));
     } finally {

@@ -80,6 +80,24 @@ describe('loadFaceLandmarker', () => {
     }
   });
 
+  it('hook modes: throw and empty', async () => {
+    const g = globalThis as { __iappEkycSimulateBrokenGpu?: boolean | string };
+    try {
+      g.__iappEkycSimulateBrokenGpu = 'throw';
+      const throwing = await loadFaceLandmarker();
+      expect(() => throwing.detectForVideo(null as unknown as HTMLVideoElement, 0)).toThrow();
+      resetFaceLandmarkerLoaderForTests();
+      g.__iappEkycSimulateBrokenGpu = 'empty';
+      const empty = await loadFaceLandmarker();
+      const out = empty.detectForVideo(null as unknown as HTMLVideoElement, 0) as {
+        faceLandmarks: unknown[];
+      };
+      expect(out.faceLandmarks).toHaveLength(0);
+    } finally {
+      delete g.__iappEkycSimulateBrokenGpu;
+    }
+  });
+
   it('tracks 2 faces so a second person can be seen', async () => {
     await loadFaceLandmarker();
     expect(created[0].numFaces).toBe(2);

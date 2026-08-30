@@ -94,6 +94,9 @@ const MULTI_FACE_FRAMES = 5;
 const UNUSABLE_FRAMES_BEFORE_CPU_RETRY = 15;
 const UNUSABLE_MIN_FRAMES = 3;
 const UNUSABLE_MAX_WAIT_MS = 2000;
+/** No faces EVER from this delegate -> try CPU (see active-liveness.ts). */
+const NO_DETECTION_CPU_RETRY_MS = 8000;
+const NO_DETECTION_MIN_FRAMES = 10;
 
 const STATE_MESSAGE_KEY: Record<FaceCaptureState, string> = {
   initializing: 'initializing',
@@ -147,6 +150,9 @@ class FaceCaptureSession {
   private multiFaceStreak = 0;
   private unusableStreak = 0;
   private unusableSinceMs = 0;
+  private delegateStartedMs = 0;
+  private framesOnDelegate = 0;
+  private sawUsableFace = false;
   private triedCpuDelegate = false;
   private swappingDelegate = false;
   private recoveredToCpu = false;
@@ -211,6 +217,7 @@ class FaceCaptureSession {
       ]);
       if (this.finished) return; // cancelled while starting up
       this.landmarker = landmarker;
+      this.delegateStartedMs = performance.now();
 
       const video = this.overlay.video;
       this.overlay.canvas.width = video.videoWidth;
@@ -238,7 +245,15 @@ class FaceCaptureSession {
     if (video.videoWidth === 0 || video.currentTime === this.lastVideoTime) return;
     this.lastVideoTime = video.currentTime;
 
-    const result = landmarker.detectForVideo(video, performance.now()) as FaceLandmarkerResultLike;
+    let result: FaceLandmarkerResultLike;
+    try {
+      result = landmarker.detectForVideo(video, performance.now()) as FaceLandmarkerResultLike;
+    } catch {
+      // A broken GPU delegate can THROW on detect (see active-liveness.ts).
+      if (this.noteUnusableFrame()) void this.recoverFromUnusableDetector();
+      return;
+    }
+    this.framesOnDelegate += 1;
     const oval = computeOvalGuide(video.videoWidth, video.videoHeight);
     const selection = selectFaces(result, this.options.faceSelection);
     const obs = mapObservation(result, {
@@ -252,23 +267,27 @@ class FaceCaptureSession {
     // Detector running but returning impossible coordinates: retry on the
     // CPU delegate once, then surface a real error (see active-liveness.ts).
     if (selection.rejected > 0 && selection.count === 0) {
-      const now = performance.now();
-      if (this.unusableStreak === 0) this.unusableSinceMs = now;
-      this.unusableStreak += 1;
-      const giveUpOnThisDelegate =
-        this.unusableStreak >= UNUSABLE_FRAMES_BEFORE_CPU_RETRY ||
-        (this.unusableStreak >= UNUSABLE_MIN_FRAMES &&
-          now - this.unusableSinceMs >= UNUSABLE_MAX_WAIT_MS);
-      if (giveUpOnThisDelegate) {
+      if (this.noteUnusableFrame()) {
         void this.recoverFromUnusableDetector();
         return;
       }
     } else if (selection.count > 0) {
       this.unusableStreak = 0;
+      this.sawUsableFace = true;
       if (this.recoveredToCpu && !this.cpuPinStored) {
         this.cpuPinStored = true;
         persistCpuPin();
       }
+    }
+
+    if (
+      !this.triedCpuDelegate &&
+      !this.sawUsableFace &&
+      this.framesOnDelegate >= NO_DETECTION_MIN_FRAMES &&
+      performance.now() - this.delegateStartedMs >= NO_DETECTION_CPU_RETRY_MS
+    ) {
+      void this.recoverFromUnusableDetector();
+      return;
     }
 
     this.considerBestFrame(selection, obs, video);
@@ -290,6 +309,18 @@ class FaceCaptureSession {
     if (held) void this.capture();
   };
 
+  /** Track one unusable/throwing detector frame; true = give up on delegate. */
+  private noteUnusableFrame(): boolean {
+    const now = performance.now();
+    if (this.unusableStreak === 0) this.unusableSinceMs = now;
+    this.unusableStreak += 1;
+    return (
+      this.unusableStreak >= UNUSABLE_FRAMES_BEFORE_CPU_RETRY ||
+      (this.unusableStreak >= UNUSABLE_MIN_FRAMES &&
+        now - this.unusableSinceMs >= UNUSABLE_MAX_WAIT_MS)
+    );
+  }
+
   /** See ActiveLivenessFlow.recoverFromUnusableDetector — same contract. */
   private async recoverFromUnusableDetector(): Promise<void> {
     if (this.swappingDelegate || this.finished) return;
@@ -310,6 +341,8 @@ class FaceCaptureSession {
       if (this.finished) return;
       this.landmarker = cpu;
       this.recoveredToCpu = true;
+      this.delegateStartedMs = performance.now();
+      this.framesOnDelegate = 0;
     } catch (e) {
       this.fail(new FaceDetectorUnavailableError(undefined, { cause: e }));
     } finally {

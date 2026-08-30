@@ -115,10 +115,13 @@ function withSimulatedGpuFault(
   instance: FaceLandmarkerLike,
   delegate: 'GPU' | 'CPU',
 ): FaceLandmarkerLike {
-  const flagged =
-    (globalThis as { __iappEkycSimulateBrokenGpu?: boolean })
-      .__iappEkycSimulateBrokenGpu === true;
-  if (!flagged || delegate === 'CPU') return instance;
+  // true / 'garbage' = 1e12 coordinates; 'throw' = detect throws;
+  // 'empty' = zero faces forever. All three shapes seen on the same field
+  // device on different days.
+  const mode = (globalThis as { __iappEkycSimulateBrokenGpu?: boolean | string })
+    .__iappEkycSimulateBrokenGpu;
+  const active = mode === true || mode === 'garbage' || mode === 'throw' || mode === 'empty';
+  if (!active || delegate === 'CPU') return instance;
   const junk = (offsetX: number) => {
     const S = 1e12;
     return [
@@ -131,6 +134,10 @@ function withSimulatedGpuFault(
   return {
     detectForVideo(video: HTMLVideoElement, ts: number) {
       instance.detectForVideo(video, ts); // keep the real per-frame cost
+      if (mode === 'throw') throw new Error('simulated GPU detect failure');
+      if (mode === 'empty') {
+        return { faceLandmarks: [], faceBlendshapes: [], facialTransformationMatrixes: [] };
+      }
       return {
         faceLandmarks: [junk(0), junk(2e11)],
         faceBlendshapes: [{ categories: [] }, { categories: [] }],

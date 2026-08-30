@@ -115,8 +115,9 @@
   function fmt(n, d) { return Number(n).toFixed(d === undefined ? 3 : d); }
 
   function newStats() {
-    return { frames: 0, ok: 0, unusable: 0, noFace: 0, multi: 0, tooSmall: 0,
-      offCentre: 0, rawGt1: 0, maxRaw: 0, offsets: [], sample: '', error: null };
+    return { frames: 0, detectErrors: 0, ok: 0, unusable: 0, noFace: 0, multi: 0,
+      tooSmall: 0, offCentre: 0, rawGt1: 0, maxRaw: 0, offsets: [], sample: '',
+      error: null };
   }
 
   /** GPU renderer string — identifies the driver a bad device runs on. */
@@ -191,8 +192,9 @@
    */
   function delegateBroken(s) {
     if (!s || s.error) return true;
-    if (!s.frames) return true;
-    return s.unusable / s.frames >= 0.5;
+    var total = s.frames + s.detectErrors;
+    if (!total) return true;
+    return (s.unusable + s.detectErrors) / total >= 0.5;
   }
 
   function phaseLine(phase) {
@@ -200,6 +202,7 @@
     if (!s) return '[' + phase.label + '] not run';
     if (s.error) return '[' + phase.label + '] FAILED TO LOAD: ' + s.error;
     return '[' + phase.label + '] frames ' + s.frames +
+      ' | detect errors ' + s.detectErrors +
       ' | gate OK ' + s.ok + ' (' + fmt(okPct(s), 1) + '%)' +
       ' | unusable ' + s.unusable + ' | no face ' + s.noFace +
       ' | >1 person ' + s.multi + ' | too small ' + s.tooSmall +
@@ -209,17 +212,26 @@
       (s.sample ? '\n  sample: ' + s.sample : '');
   }
 
+  /** Any frame where this delegate actually detected a face. */
+  function sawFaces(s) {
+    return !!s && (s.ok + s.multi + s.tooSmall + s.offCentre) > 0;
+  }
+
   function conclusion() {
     var a = stats['default'];
     var b = stats['cpu'];
     if (!a || !b) return 'incomplete run';
+    // A delegate that saw NO face for its whole phase while the other one
+    // did (same camera, same user) is blind -- a fourth failure shape:
+    // not garbage, not an error, just nothing.
+    var aBlind = !delegateBroken(a) && !sawFaces(a) && sawFaces(b);
     var centringNote = '';
     var healthy = !delegateBroken(a) ? a : (!delegateBroken(b) ? b : null);
     if (healthy && okPct(healthy) < 80 && (healthy.offCentre + healthy.tooSmall) > 0) {
       centringNote = ' (Positioning hints above are about where the face sat during ' +
         'this check, not about the detector; the real flow guides the user with the oval.)';
     }
-    if (!delegateBroken(a)) {
+    if (!delegateBroken(a) && !aBlind) {
       return 'The default mode is healthy on this device. The eKYC flow proceeds normally.' +
         centringNote;
     }
@@ -244,7 +256,7 @@
     var lines = [
       'iApp eKYC face detector self-check',
       'engine: ' + (window.IappEkyc && window.IappEkyc.SDK_VERSION),
-      'page: facecheck/3',
+      'page: facecheck/4',
       'userAgent: ' + navigator.userAgent,
       'webgl: ' + webglRenderer(),
       'persisted cpu preference: ' + pin,
@@ -262,7 +274,17 @@
     var W = video.videoWidth, H = video.videoHeight;
     videoSize = W + 'x' + H;
 
-    var result = landmarker.detectForVideo(video, performance.now());
+    var result;
+    try {
+      result = landmarker.detectForVideo(video, performance.now());
+    } catch (e) {
+      // A broken delegate can THROW on detect (seen on the field device):
+      // count it -- an invisible zero-frame phase told us nothing.
+      s.detectErrors++;
+      s.sample = 'detectForVideo threw: ' + (e && e.message ? e.message : String(e));
+      if ((s.frames + s.detectErrors) % 3 === 0) outEl.textContent = buildReport();
+      return;
+    }
     var faces = result.faceLandmarks || [];
     var boxes = [];
     for (var i = 0; i < faces.length; i++) boxes.push(boxOf(faces[i]));
@@ -313,7 +335,8 @@
     requestAnimationFrame(loop);
     if (!landmarker || !video.videoWidth) return;
     var s = stats[PHASES[phaseIndex].key];
-    if (s.frames >= PHASE_FRAMES || performance.now() - phaseStart >= PHASE_MS) {
+    if (s.frames + s.detectErrors >= PHASE_FRAMES ||
+        performance.now() - phaseStart >= PHASE_MS) {
       advancePhase();
       return;
     }

@@ -3,6 +3,29 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.7 / facecheck 4] — 2026-08-27
+
+### Fixed
+- **Two more GPU-delegate failure shapes now recover instead of hanging.**
+  The field device that emitted garbage coordinates later started
+  (a) THROWING from detect and (b) returning zero faces forever — its
+  facecheck GPU phase logged `frames 0`. The flow's render loop had no
+  try/catch (a throwing delegate froze the UI with an uncaught exception
+  per frame), and the recovery only triggered on garbage output, so an
+  empty-forever delegate sat on `center_face` with no error — exactly the
+  customer's production-app symptom. Now: detect is guarded (a throw
+  counts as an unusable frame, same 2 s give-up), and a delegate that has
+  processed 10+ frames over 8 s without ever seeing a face is silently
+  swapped for the CPU delegate (legitimate "user not in frame yet" is
+  unaffected — the swap is harmless on a healthy device).
+  Verified end to end for all three fault shapes via the fault hook
+  (`__iappEkycSimulateBrokenGpu` now accepts `'garbage' | 'throw' |
+  'empty'`) with the field device's own footage as the camera: challenge
+  reached at 7.5 s / 7.5 s / 13.5 s, pin persisted each time.
+- **facecheck rev 4**: counts detect exceptions (`detect errors`) so a
+  zero-frame phase is explained rather than blank, and calls out a blind
+  delegate (no faces all phase while the other delegate sees them).
+
 ## [facecheck/3] — 2026-08-27
 
 ### Fixed
