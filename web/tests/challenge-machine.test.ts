@@ -142,15 +142,37 @@ describe('ChallengeMachine — happy path', () => {
     expect(rig.machine.finishedAt).toBeGreaterThan(rig.machine.startedAt);
   });
 
-  it('findFace requires 20 CONSECUTIVE frontal frames', () => {
+  it('findFace completes on TIME on a slow device: 5+ frames spanning 500 ms', () => {
+    // 100 ms cadence (10 fps): the 6th compliant frame crosses the 500 ms
+    // mark. The old pure-frame rule needed 20 frames = 2 s here.
     const rig = makeRig();
     rig.machine.start();
-    rig.frames(face(), 19);
-    rig.frame(NO_FACE); // breaks the run
-    expect(rig.machine.state.phase).toBe('findFace');
-    rig.frames(face(), 19);
+    rig.frames(face(), 5);
     expect(rig.machine.state.phase).toBe('findFace');
     rig.frame(face());
+    expect(rig.machine.state.phase).toBe('challenge');
+  });
+
+  it('findFace completes on FRAMES on a fast device: 20 frames beat the clock', () => {
+    // 10 ms cadence (100 fps): 20 frames arrive in 200 ms, before the
+    // 500 ms time rule — the frame rule completes the hold.
+    const rig = makeRig();
+    rig.machine.start();
+    rig.frames(face(), 19, 10);
+    expect(rig.machine.state.phase).toBe('findFace');
+    rig.frame(face(), 10);
+    expect(rig.machine.state.phase).toBe('challenge');
+  });
+
+  it('a broken streak resets the hold entirely', () => {
+    const rig = makeRig();
+    rig.machine.start();
+    rig.frames(face(), 19, 10);
+    rig.frame(NO_FACE, 10); // breaks the run at frame 19
+    expect(rig.machine.state.phase).toBe('findFace');
+    rig.frames(face(), 19, 10);
+    expect(rig.machine.state.phase).toBe('findFace');
+    rig.frame(face(), 10);
     expect(rig.machine.state.phase).toBe('challenge');
   });
 
@@ -161,7 +183,7 @@ describe('ChallengeMachine — happy path', () => {
     expect(rig.machine.state.phase).toBe('findFace');
     rig.frames(face({ yawDeg: 16 }), 25); // |yaw| >= 15
     expect(rig.machine.state.phase).toBe('findFace');
-    rig.frames(face({ pitchDeg: 13 }), 25); // |pitch| >= 12
+    rig.frames(face({ pitchDeg: 16 }), 25); // |pitch| >= 15
     expect(rig.machine.state.phase).toBe('findFace');
     rig.frames(face({ centerOffsetFrac: 0.2 }), 25); // off center
     expect(rig.machine.state.phase).toBe('findFace');

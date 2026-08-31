@@ -16,6 +16,7 @@ import { CancelledError, EkycError, FaceDetectorUnavailableError } from '../core
 import { clearCpuPin, persistCpuPin, readPersistedCpuPin } from './delegate-preference';
 import { createTranslator, type Locale, type Translator } from '../core/i18n/i18n';
 import { applyTheme, type EkycTheme } from '../core/theme';
+import { playCue, type CuePreferences } from '../core/feedback';
 import {
   buildOverlay,
   computeOvalGuide,
@@ -60,6 +61,8 @@ export interface FaceCaptureStartOptions {
    * suit every device we have measured; override only on support advice.
    */
   faceSelection?: Partial<FaceSelectionConfig>;
+  /** Audio/vibration cues on instruction changes and results (default on). */
+  cues?: CuePreferences;
 }
 
 /** Frontal gate for a good selfie snapshot. */
@@ -478,8 +481,10 @@ class FaceCaptureSession {
 
     this.state = state;
     if (messageKey !== this.lastMessageKey) {
+      const isFirstMessage = this.lastMessageKey === '';
       this.lastMessageKey = messageKey;
       if (this.overlay) this.overlay.chip.textContent = this.t(messageKey);
+      if (!isFirstMessage) playCue('instruction', this.options.cues);
       this.options.onState?.(state, { messageKey });
     }
     if (this.overlay) {
@@ -502,6 +507,7 @@ class FaceCaptureSession {
     if (!overlay) return;
     this.stopLoop();
     this.setState('capturing');
+    playCue('success', this.options.cues);
     this.playShutter();
     try {
       const source = this.bestCanvas ?? this.fallbackFrame();

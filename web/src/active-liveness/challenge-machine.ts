@@ -92,8 +92,18 @@ export interface ChallengeMachineConfig {
   /** N distinct challenges drawn from the pool (default 3). */
   challengeCount: number;
   challengePool: ChallengeType[];
-  /** Consecutive frontal frames required (findFace & recenter): 20. */
+  /**
+   * The hold gate (findFace & recenter) completes on whichever comes
+   * first: `findFaceHoldFrames` consecutive compliant frames, or
+   * `findFaceMinHoldFrames` consecutive compliant frames spanning
+   * `findFaceHoldMs`. A pure frame count made the hold fps-dependent — 20
+   * frames is 0.7 s on a flagship but 3-4 s of perfectly still posing on a
+   * low-fps device, and one dropped frame reset it (field feedback: "stuck
+   * at Look straight at the camera again").
+   */
   findFaceHoldFrames: number;
+  findFaceMinHoldFrames: number;
+  findFaceHoldMs: number;
   /** findFace: faceWidthFrac >= 0.25. */
   minFaceWidthFrac: number;
   /** findFace: |yaw| < 15 deg. */
@@ -157,9 +167,15 @@ export const DEFAULT_CHALLENGE_MACHINE_CONFIG: Omit<ChallengeMachineConfig, 'rng
   challengeCount: 3,
   challengePool: ['blink', 'turnLeft', 'turnRight', 'smile'],
   findFaceHoldFrames: 20,
+  findFaceMinHoldFrames: 5,
+  findFaceHoldMs: 500,
   minFaceWidthFrac: 0.25,
   findFaceMaxAbsYawDeg: 15,
-  findFaceMaxAbsPitchDeg: 12,
+  // 15 deg, was 12: looking slightly down at a hand-held phone is the
+  // natural pose and was the most common hold blocker. Pose quality of the
+  // final selfie is unaffected — best-frame selection still prefers
+  // |pitch| < 10 — and liveness proof is the server's verdict, not this.
+  findFaceMaxAbsPitchDeg: 15,
   maxCenterOffsetFrac: 0.12,
   blinkClosedBelow: 0.2,
   blinkOpenAbove: 0.7,
@@ -222,6 +238,7 @@ export class ChallengeMachine {
   private readonly cfg: ChallengeMachineConfig;
   private phase: MachinePhase = 'init';
   private holdFrames = 0;
+  private holdStartedAtMs = 0;
   private challenges: ChallengeType[] = [];
   private index = -1;
   private current: ChallengeRuntime | null = null;
@@ -377,11 +394,16 @@ export class ChallengeMachine {
 
   private processHold(obs: FaceObservation): void {
     if (this.meetsFrontalHold(obs)) {
+      if (this.holdFrames === 0) this.holdStartedAtMs = this.cfg.now();
       this.holdFrames += 1;
       this.updateEyeBaseline(obs);
     } else this.holdFrames = 0;
 
-    if (this.holdFrames >= this.cfg.findFaceHoldFrames) {
+    const heldLongEnough =
+      this.holdFrames >= this.cfg.findFaceHoldFrames ||
+      (this.holdFrames >= this.cfg.findFaceMinHoldFrames &&
+        this.cfg.now() - this.holdStartedAtMs >= this.cfg.findFaceHoldMs);
+    if (heldLongEnough) {
       if (this.phase === 'findFace') {
         this.challenges = this.drawChallenges();
         this.index = 0;

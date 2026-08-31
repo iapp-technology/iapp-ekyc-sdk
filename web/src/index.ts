@@ -63,6 +63,7 @@ export {
 
 // Camera
 export { CameraController, type CameraOpenOptions } from './core/camera';
+export { playCue, type CueKind, type CuePreferences } from './core/feedback';
 
 // Document capture
 export {

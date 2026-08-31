@@ -248,6 +248,7 @@
   function runActiveLiveness(ekyc, mount, config, includeImages) {
     return ekyc.startActiveLiveness({
       mount: mount,
+      cues: config.cues || undefined,
       onState: function (info) {
         post({
           type: 'state', flow: 'activeLiveness',
@@ -277,9 +278,10 @@
     });
   }
 
-  function runFaceCapture(ekyc, mount) {
+  function runFaceCapture(ekyc, mount, config) {
     return ekyc.captureFace({
       mount: mount,
+      cues: config.cues || undefined,
       onState: function (state, info) {
         post({
           type: 'state', flow: 'faceCapture', state: String(state),
@@ -359,7 +361,7 @@
       var run =
         config.flow === 'documentCapture' ? runDocumentCapture(ekyc, mount, config, includeImages) :
         config.flow === 'activeLiveness' ? runActiveLiveness(ekyc, mount, config, includeImages) :
-        runFaceCapture(ekyc, mount);
+        runFaceCapture(ekyc, mount, config);
       run['catch'](postEngineError);
     }
   };

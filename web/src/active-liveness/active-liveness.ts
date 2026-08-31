@@ -20,6 +20,7 @@ import {
 import { clearCpuPin, persistCpuPin, readPersistedCpuPin } from './delegate-preference';
 import { createTranslator, type Locale, type Translator } from '../core/i18n/i18n';
 import { applyTheme, type EkycTheme } from '../core/theme';
+import { playCue, type CuePreferences } from '../core/feedback';
 import type { ActiveLivenessResult, SdkIntegration } from '../core/types';
 import { resolveSdkIdentity } from '../version';
 import {
@@ -111,6 +112,8 @@ export interface ActiveLivenessStartOptions {
    * suit every device we have measured; override only on support advice.
    */
   faceSelection?: Partial<FaceSelectionConfig>;
+  /** Audio/vibration cues on instruction changes and results (default on). */
+  cues?: CuePreferences;
   /** Wrapper SDK identity for the challenge log (docs/WEBVIEW_BRIDGE.md). */
   integration?: SdkIntegration;
 }
@@ -445,8 +448,19 @@ class LivenessSession {
     if (!overlay) return;
     const messageKey = this.messageKeyFor(snapshot, obs);
     if (messageKey !== this.lastMessageKey) {
+      const isFirstMessage = this.lastMessageKey === '';
       this.lastMessageKey = messageKey;
       overlay.chip.textContent = this.t(messageKey);
+      // An audible/tactile nudge so instruction changes register without
+      // the user reading the chip mid-flow. Not on the very first message.
+      if (!isFirstMessage) {
+        playCue(
+          snapshot.phase === 'challenge' && snapshot.currentChallenge !== null
+            ? 'challenge'
+            : 'instruction',
+          this.options.cues,
+        );
+      }
       this.options.onState?.({
         phase: snapshot.phase,
         messageKey,
@@ -495,6 +509,7 @@ class LivenessSession {
       });
       this.machine.markDone();
       result.selfieImage = selfie;
+      playCue('success', this.options.cues);
       this.options.onState?.({ phase: 'done', messageKey: 'liveness_passed' });
       this.finish();
       this.resolve(result);
@@ -524,6 +539,7 @@ class LivenessSession {
 
   private fail(e: unknown): void {
     if (this.finished) return;
+    playCue('failure', this.options.cues);
     if (this.overlay) {
       this.overlay.chip.textContent = this.t(
         e instanceof EkycError ? e.userMessageKey : 'liveness_failed',

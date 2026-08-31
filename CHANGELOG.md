@@ -3,6 +3,33 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.8] — 2026-08-27
+
+### Changed
+- **The hold gate (findFace / recenter) is time-based.** It completed after
+  20 CONSECUTIVE compliant frames — 0.7 s on a flagship but 3-4 s of
+  perfectly still posing on a low-fps device, with any single dropped frame
+  resetting it to zero (field feedback on a Galaxy A12: "stuck at Look
+  straight at the camera again"). It now completes on whichever comes
+  first: 20 frames, or 5+ compliant frames spanning 500 ms
+  (`findFaceMinHoldFrames` / `findFaceHoldMs`). Measured at a 6 fps camera:
+  first challenge at 6.3 s vs 9.0 s on 0.2.7; the recenter hold saves the
+  same again.
+- **Pitch tolerance 12 -> 15 degrees.** Looking slightly down at a
+  hand-held phone is the natural pose and was the most common hold blocker.
+  Selfie quality is unaffected (best-frame selection still prefers
+  |pitch| < 10) and liveness proof remains the server verdict.
+
+### Added
+- **Audio + vibration cues** (`core/feedback.ts`): a short tone and a
+  vibration pulse whenever the instruction changes, a two-tone chime on a
+  challenge being issued and on success, a low buzz on failure — so
+  instruction changes register without reading the chip. Best-effort:
+  silent where WebAudio is suspended, vibration is a no-op on iOS, and a
+  cue can never break the flow. Default on; disable per flow with
+  `cues: { sound: false, vibrate: false }` (engine option and WebView
+  bridge config passthrough). Flutter parity pending.
+
 ## [web 0.2.7 / facecheck 4] — 2026-08-27
 
 ### Fixed
