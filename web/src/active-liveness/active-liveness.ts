@@ -41,6 +41,7 @@ import {
 import {
   mapObservation,
   selectFaces,
+  type FaceBox,
   type FaceLandmarkerResultLike,
   type FaceSelection,
   type FaceSelectionConfig,
@@ -167,6 +168,8 @@ class LivenessSession {
   private bestCanvas: HTMLCanvasElement | null = null;
   /** JPEG of `bestCanvas`, started during recenter so finalize does not wait for it. */
   private pendingSelfie: { canvas: HTMLCanvasElement; blob: Promise<Blob> } | null = null;
+  /** Last subject face box (normalized): the fallback selfie is cropped around it. */
+  private lastFaceBox: FaceBox | null = null;
   private unusableStreak = 0;
   private unusableSinceMs = 0;
   private delegateStartedMs = 0;
@@ -304,6 +307,7 @@ class LivenessSession {
       return;
     }
 
+    if (selection.box) this.lastFaceBox = selection.box;
     this.options.onObservation?.(obs);
     const snapshot = this.machine.process(obs);
     this.considerBestFrame(selection, obs, video);
@@ -409,6 +413,7 @@ class LivenessSession {
     obs: FaceObservation,
     video: HTMLVideoElement,
   ): void {
+    this.selector.track(obs);
     if (!this.selector.isCandidate(obs) || !this.analysisCanvas) return;
     const bbox = selection.box;
     if (!bbox) return;
@@ -583,14 +588,39 @@ class LivenessSession {
     }
   }
 
-  /** Should not happen in practice: capture reached without a candidate. */
+  /**
+   * Capture reached without a best-frame candidate: crop the live frame
+   * around the last face box (same 40% margin as a candidate) so the
+   * server still gets a face image, not a 1080p frame with a small face in
+   * it. Whole frame only if no face was ever seen.
+   */
   private fallbackFrame(): HTMLCanvasElement {
     const video = this.overlay?.video;
     const canvas = document.createElement('canvas');
-    canvas.width = video?.videoWidth ?? 1;
-    canvas.height = video?.videoHeight ?? 1;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (ctx && video) ctx.drawImage(video, 0, 0);
+    if (!video || !ctx) {
+      canvas.width = 1;
+      canvas.height = 1;
+      return canvas;
+    }
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const box = this.lastFaceBox;
+    if (!box) {
+      canvas.width = vw;
+      canvas.height = vh;
+      ctx.drawImage(video, 0, 0);
+      return canvas;
+    }
+    const faceW = (box.maxX - box.minX) * vw;
+    const faceH = (box.maxY - box.minY) * vh;
+    const cx = Math.max(0, box.minX * vw - faceW * SELFIE_CROP_MARGIN);
+    const cy = Math.max(0, box.minY * vh - faceH * SELFIE_CROP_MARGIN);
+    const cw = Math.max(8, Math.min(vw - cx, faceW * (1 + 2 * SELFIE_CROP_MARGIN)));
+    const ch = Math.max(8, Math.min(vh - cy, faceH * (1 + 2 * SELFIE_CROP_MARGIN)));
+    canvas.width = Math.round(cw);
+    canvas.height = Math.round(ch);
+    ctx.drawImage(video, cx, cy, cw, ch, 0, 0, canvas.width, canvas.height);
     return canvas;
   }
 
@@ -637,6 +667,7 @@ class LivenessSession {
     this.detectCanvas = null;
     this.bestCanvas = null;
     this.pendingSelfie = null;
+    this.lastFaceBox = null;
   }
 }
 

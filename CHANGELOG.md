@@ -3,6 +3,24 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.13] — 2026-08-31
+
+### Fixed
+- **The selfie could be the whole 1080p frame instead of a face crop.** A
+  traced session on a Galaxy A12 (user with glasses) never produced a
+  best-frame candidate under "both eyes > 0.8" — glare compresses the blink
+  blendshape to ~0.6-0.7 open — so finalize fell back to the full frame:
+  573 KB uploaded, a small face for the server's re-check and for any later
+  face verification.
+  - Eyes-open gate is now: mean of both eyes ≥ 0.5, weaker eye ≥ 0.35, and
+    ≥ 80% of the user's own open-eye baseline (tracked like the blink
+    baseline), so a wide-eyed user's half-closed frames still lose. Pitch
+    tolerance 10 → 12 degrees. Scoring prefers the more open-eyed frame.
+  - The no-candidate fallback crops the live frame around the last face
+    box (40% margin) instead of sending the whole frame.
+  - `BestFrameSelectorConfig`: `minEyeOpen` replaced by `minMeanEyeOpen`,
+    `minEitherEyeOpen`, `minEyeOpenFracOfBaseline`; new `track(obs)`.
+
 ## [web 0.2.12] — 2026-08-31
 
 ### Fixed

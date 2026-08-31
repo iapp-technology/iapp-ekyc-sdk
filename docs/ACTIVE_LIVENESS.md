@@ -129,10 +129,16 @@ Pure code (no camera/ML imports), RNG injectable for tests:
 - **recenter**: findFace conditions again (fresh frontal pose before
   capture).
 - **Best-frame selection** runs across the ENTIRE session: every processed
-  frame with 1 face, `|yaw| < 10°`, `|pitch| < 10°`, both eyes > 0.8,
-  `faceWidthFrac ≥ 0.25` is a candidate, scored
-  `laplacianVariance × faceWidthFrac²`. Final selfie = argmax, cropped to
-  the face bounding box expanded by **40%** margin, JPEG quality 92.
+  frame with 1 face, `|yaw| < 10°`, `|pitch| < 12°`, `faceWidthFrac ≥ 0.25`
+  and eyes open is a candidate, scored
+  `laplacianVariance × faceWidthFrac² × (0.5 + 0.5 × mean eye openness)`.
+  "Eyes open" = mean of both eyes ≥ 0.5, the weaker eye ≥ 0.35, and the mean
+  ≥ 80% of the user's own open-eye baseline (EMA, same rules as the blink
+  baseline) — a fixed "both > 0.8" never passed for glasses wearers, so
+  whole sessions ended with no candidate. Final selfie = argmax, cropped to
+  the face bounding box expanded by **40%** margin, JPEG quality 92. With no
+  candidate at all, the fallback is the live frame cropped around the last
+  face box (whole frame only if no face was ever seen).
 - **finalizing**: submit selfie + challenge log (schema below). Network or
   server failure → `failed(finalizeError)` with the typed API error.
 

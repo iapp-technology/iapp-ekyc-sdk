@@ -30,6 +30,7 @@ import type { FaceObservation } from './challenge-machine';
 import {
   mapObservation,
   selectFaces,
+  type FaceBox,
   type FaceLandmarkerResultLike,
   type FaceSelection,
   type FaceSelectionConfig,
@@ -157,6 +158,7 @@ class FaceCaptureSession {
   private landmarker: FaceLandmarkerLike | null = null;
   private rafId: number | null = null;
   private multiFaceStreak = 0;
+  private lastFaceBox: FaceBox | null = null;
   private unusableStreak = 0;
   private unusableSinceMs = 0;
   private delegateStartedMs = 0;
@@ -192,7 +194,7 @@ class FaceCaptureSession {
     this.selector = new BestFrameSelector<HTMLCanvasElement>({
       maxAbsYawDeg: FRONTAL_MAX_YAW_DEG,
       maxAbsPitchDeg: FRONTAL_MAX_PITCH_DEG,
-      minEyeOpen: MIN_EYE_OPEN,
+      minMeanEyeOpen: MIN_EYE_OPEN,
       minFaceWidthFrac: MIN_FACE_WIDTH_FRAC,
     });
   }
@@ -310,6 +312,7 @@ class FaceCaptureSession {
       return;
     }
 
+    if (selection.box) this.lastFaceBox = selection.box;
     this.considerBestFrame(selection, obs, video);
 
     this.multiFaceStreak = obs.count > 1 ? this.multiFaceStreak + 1 : 0;
@@ -451,6 +454,7 @@ class FaceCaptureSession {
     obs: FaceObservation,
     video: HTMLVideoElement,
   ): void {
+    this.selector.track(obs);
     if (!this.selector.isCandidate(obs) || !this.analysisCanvas) return;
     const bbox = selection.box;
     if (!bbox) return;
@@ -566,13 +570,34 @@ class FaceCaptureSession {
   }
 
   /** Fallback: no candidate was ever captured — grab the current frame. */
+  /** No candidate: crop the live frame around the last face box (see active-liveness.ts). */
   private fallbackFrame(): HTMLCanvasElement {
     const video = this.overlay?.video;
     const canvas = document.createElement('canvas');
-    canvas.width = video?.videoWidth ?? 1;
-    canvas.height = video?.videoHeight ?? 1;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (ctx && video) ctx.drawImage(video, 0, 0);
+    if (!video || !ctx) {
+      canvas.width = 1;
+      canvas.height = 1;
+      return canvas;
+    }
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const box = this.lastFaceBox;
+    if (!box) {
+      canvas.width = vw;
+      canvas.height = vh;
+      ctx.drawImage(video, 0, 0);
+      return canvas;
+    }
+    const faceW = (box.maxX - box.minX) * vw;
+    const faceH = (box.maxY - box.minY) * vh;
+    const cx = Math.max(0, box.minX * vw - faceW * SELFIE_CROP_MARGIN);
+    const cy = Math.max(0, box.minY * vh - faceH * SELFIE_CROP_MARGIN);
+    const cw = Math.max(8, Math.min(vw - cx, faceW * (1 + 2 * SELFIE_CROP_MARGIN)));
+    const ch = Math.max(8, Math.min(vh - cy, faceH * (1 + 2 * SELFIE_CROP_MARGIN)));
+    canvas.width = Math.round(cw);
+    canvas.height = Math.round(ch);
+    ctx.drawImage(video, cx, cy, cw, ch, 0, 0, canvas.width, canvas.height);
     return canvas;
   }
 

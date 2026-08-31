@@ -14,15 +14,28 @@ import type { FaceObservation } from './challenge-machine';
 
 export interface BestFrameSelectorConfig {
   maxAbsYawDeg: number;
+  /** 12: looking slightly down at a hand-held phone is the natural pose. */
   maxAbsPitchDeg: number;
-  minEyeOpen: number;
+  /**
+   * Eyes-open gate. A fixed "both eyes > 0.8" never passed for a user with
+   * glasses (glare compresses the blink blendshape to ~0.6-0.7 open), so a
+   * whole session ended with NO candidate and the full 1080p frame was
+   * uploaded instead of a face crop. Now: absolute floors that separate
+   * "open" from "mid-blink", plus a relative rule against the user's own
+   * open-eye baseline so a wide-eyed user's half-closed frames still lose.
+   */
+  minMeanEyeOpen: number;
+  minEitherEyeOpen: number;
+  minEyeOpenFracOfBaseline: number;
   minFaceWidthFrac: number;
 }
 
 export const DEFAULT_BEST_FRAME_CONFIG: BestFrameSelectorConfig = {
   maxAbsYawDeg: 10,
-  maxAbsPitchDeg: 10,
-  minEyeOpen: 0.8,
+  maxAbsPitchDeg: 12,
+  minMeanEyeOpen: 0.5,
+  minEitherEyeOpen: 0.35,
+  minEyeOpenFracOfBaseline: 0.8,
   minFaceWidthFrac: 0.25,
 };
 
@@ -63,26 +76,54 @@ export class BestFrameSelector<TPayload> {
   private readonly cfg: BestFrameSelectorConfig;
   private bestScore = -Infinity;
   private bestPayload: TPayload | null = null;
+  /** EMA of the user's own open-eye level (mean of both eyes); null until seeded. */
+  private eyeBaseline: number | null = null;
 
   constructor(config: Partial<BestFrameSelectorConfig> = {}) {
     this.cfg = { ...DEFAULT_BEST_FRAME_CONFIG, ...config };
   }
 
-  /** Candidate gate per the spec (frontal, eyes open, close enough). */
+  /**
+   * Feed every single-face frame so the eyes-open rule can be relative to
+   * THIS user. Same rules as the challenge machine's blink baseline: seeded
+   * by the first frame above 0.3, never pulled down by blinks (samples
+   * below 80% of the baseline are ignored).
+   */
+  track(obs: FaceObservation): void {
+    if (obs.count !== 1) return;
+    const mean = (obs.leftEyeOpen + obs.rightEyeOpen) / 2;
+    if (this.eyeBaseline === null) {
+      if (mean > 0.3) this.eyeBaseline = mean;
+      return;
+    }
+    if (mean >= this.eyeBaseline * 0.8) this.eyeBaseline = this.eyeBaseline * 0.8 + mean * 0.2;
+  }
+
+  /** Candidate gate: frontal, eyes open (see config), close enough. */
   isCandidate(obs: FaceObservation): boolean {
+    const mean = (obs.leftEyeOpen + obs.rightEyeOpen) / 2;
+    const weaker = Math.min(obs.leftEyeOpen, obs.rightEyeOpen);
+    const relativeOk =
+      this.eyeBaseline === null || mean >= this.eyeBaseline * this.cfg.minEyeOpenFracOfBaseline;
     return (
       obs.count === 1 &&
       Math.abs(obs.yawDeg) < this.cfg.maxAbsYawDeg &&
       Math.abs(obs.pitchDeg) < this.cfg.maxAbsPitchDeg &&
-      obs.leftEyeOpen > this.cfg.minEyeOpen &&
-      obs.rightEyeOpen > this.cfg.minEyeOpen &&
+      mean >= this.cfg.minMeanEyeOpen &&
+      weaker >= this.cfg.minEitherEyeOpen &&
+      relativeOk &&
       obs.faceWidthFrac >= this.cfg.minFaceWidthFrac
     );
   }
 
-  /** score = laplacianVariance x faceWidthFrac^2 */
+  /**
+   * score = laplacianVariance x faceWidthFrac^2 x (0.5 + 0.5 x mean eye
+   * openness): among sharp, close frames prefer the one with the eyes most
+   * open.
+   */
   score(laplacianVar: number, obs: FaceObservation): number {
-    return laplacianVar * obs.faceWidthFrac * obs.faceWidthFrac;
+    const mean = (obs.leftEyeOpen + obs.rightEyeOpen) / 2;
+    return laplacianVar * obs.faceWidthFrac * obs.faceWidthFrac * (0.5 + 0.5 * mean);
   }
 
   /**
@@ -105,5 +146,6 @@ export class BestFrameSelector<TPayload> {
   reset(): void {
     this.bestScore = -Infinity;
     this.bestPayload = null;
+    this.eyeBaseline = null;
   }
 }
