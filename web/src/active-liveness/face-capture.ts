@@ -34,7 +34,11 @@ import {
   type FaceSelection,
   type FaceSelectionConfig,
 } from './face-metrics';
-import { loadFaceLandmarker, type FaceLandmarkerLike } from './mediapipe-loader';
+import {
+  loadFaceLandmarker,
+  warmUpFaceLandmarker,
+  type FaceLandmarkerLike,
+} from './mediapipe-loader';
 
 export type FaceCaptureState =
   | 'initializing'
@@ -97,6 +101,8 @@ const MULTI_FACE_FRAMES = 5;
 const UNUSABLE_FRAMES_BEFORE_CPU_RETRY = 15;
 const UNUSABLE_MIN_FRAMES = 3;
 const UNUSABLE_MAX_WAIT_MS = 2000;
+/** Inference input width cap (see active-liveness.ts DETECT_INPUT_MAX_WIDTH). */
+const DETECT_INPUT_MAX_WIDTH = 640;
 /** No faces EVER from this delegate -> try CPU (see active-liveness.ts). */
 const NO_DETECTION_CPU_RETRY_MS = 8000;
 const NO_DETECTION_MIN_FRAMES = 10;
@@ -210,14 +216,22 @@ class FaceCaptureSession {
         this.triedCpuDelegate = true;
         this.cpuPinWasUsed = true;
       }
-      const [, landmarker] = await Promise.all([
-        this.camera.open(this.overlay.video, { facingMode: 'user' }),
-        loadFaceLandmarker({
-          assetBaseUrl: this.options.assetBaseUrl,
-          modelUrl: this.options.modelUrl,
-          delegate: pinnedCpu ? 'CPU' : undefined,
-        }),
-      ]);
+      const cameraReady = this.camera
+        .open(this.overlay.video, { facingMode: 'user' })
+        .then(() => {
+          if (!this.landmarker && !this.finished && this.overlay) {
+            this.overlay.chip.textContent = this.t('preparing_detector');
+          }
+        });
+      const detectorReady = loadFaceLandmarker({
+        assetBaseUrl: this.options.assetBaseUrl,
+        modelUrl: this.options.modelUrl,
+        delegate: pinnedCpu ? 'CPU' : undefined,
+      }).then((lm) => {
+        warmUpFaceLandmarker(lm);
+        return lm;
+      });
+      const [, landmarker] = await Promise.all([cameraReady, detectorReady]);
       if (this.finished) return; // cancelled while starting up
       this.landmarker = landmarker;
       this.delegateStartedMs = performance.now();
@@ -250,7 +264,10 @@ class FaceCaptureSession {
 
     let result: FaceLandmarkerResultLike;
     try {
-      result = landmarker.detectForVideo(video, performance.now()) as FaceLandmarkerResultLike;
+      result = landmarker.detectForVideo(
+        this.detectInputFor(video),
+        performance.now(),
+      ) as FaceLandmarkerResultLike;
     } catch {
       // A broken GPU delegate can THROW on detect (see active-liveness.ts).
       if (this.noteUnusableFrame()) void this.recoverFromUnusableDetector();
@@ -311,6 +328,26 @@ class FaceCaptureSession {
 
     if (held) void this.capture();
   };
+
+  private detectCanvas: HTMLCanvasElement | null = null;
+
+  /** Downscaled copy of the frame for inference (see DETECT_INPUT_MAX_WIDTH). */
+  private detectInputFor(video: HTMLVideoElement): HTMLVideoElement | HTMLCanvasElement {
+    if (video.videoWidth <= DETECT_INPUT_MAX_WIDTH) return video;
+    if (!this.detectCanvas) this.detectCanvas = document.createElement('canvas');
+    const canvas = this.detectCanvas;
+    const scale = DETECT_INPUT_MAX_WIDTH / video.videoWidth;
+    const w = DETECT_INPUT_MAX_WIDTH;
+    const h = Math.max(1, Math.round(video.videoHeight * scale));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return video;
+    ctx.drawImage(video, 0, 0, w, h);
+    return canvas;
+  }
 
   /** Track one unusable/throwing detector frame; true = give up on delegate. */
   private noteUnusableFrame(): boolean {

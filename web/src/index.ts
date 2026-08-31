@@ -113,6 +113,9 @@ export {
 } from './active-liveness/face-metrics';
 export {
   loadFaceLandmarker,
+  preloadFaceDetector,
+  warmUpFaceLandmarker,
+  type DetectInput,
   type FaceLandmarkerLike,
   type LoadFaceLandmarkerOptions,
 } from './active-liveness/mediapipe-loader';

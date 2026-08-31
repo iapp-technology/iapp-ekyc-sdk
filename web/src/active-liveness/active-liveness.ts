@@ -45,13 +45,27 @@ import {
   type FaceSelection,
   type FaceSelectionConfig,
 } from './face-metrics';
-import { loadFaceLandmarker, type FaceLandmarkerLike } from './mediapipe-loader';
+import {
+  loadFaceLandmarker,
+  warmUpFaceLandmarker,
+  type FaceLandmarkerLike,
+} from './mediapipe-loader';
 import { JPEG_QUALITY } from '../vision/perspective';
 
 /** Face bbox is expanded by this margin for the selfie crop (spec: 40%). */
 const SELFIE_CROP_MARGIN = 0.4;
 /** Downscale width for the sharpness analysis crop (perf only). */
 const ANALYSIS_CROP_WIDTH = 160;
+/**
+ * Inference runs on a downscaled copy of the frame, not the 1080p video:
+ * every detect uploads the input to the GPU, and an 8 MB RGBA frame per
+ * call was most of the per-frame cost on low-end GPUs (Galaxy A12: 222 ms
+ * per frame, ~4.5 fps). The detector itself works at 192-256 px, so 640 px
+ * loses nothing; landmarks are normalized, so the rest of the pipeline —
+ * oval geometry, best-frame crops from the full-resolution video — is
+ * untouched.
+ */
+const DETECT_INPUT_MAX_WIDTH = 640;
 /**
  * Unusable detector output (running, but every landmark set numerically
  * impossible) triggers a rebuild on the CPU delegate after 15 consecutive
@@ -149,6 +163,7 @@ class LivenessSession {
   private lastVideoTime = -1;
   private lastMessageKey = '';
   private analysisCanvas: HTMLCanvasElement | null = null;
+  private detectCanvas: HTMLCanvasElement | null = null;
   private bestCanvas: HTMLCanvasElement | null = null;
   private unusableStreak = 0;
   private unusableSinceMs = 0;
@@ -192,14 +207,24 @@ class LivenessSession {
         this.triedCpuDelegate = true;
         this.cpuPinWasUsed = true;
       }
-      const [, landmarker] = await Promise.all([
-        this.camera.open(this.overlay.video, { facingMode: 'user' }),
-        loadFaceLandmarker({
-          assetBaseUrl: this.options.assetBaseUrl,
-          modelUrl: this.options.modelUrl,
-          delegate: pinnedCpu ? 'CPU' : undefined,
-        }),
-      ]);
+      const cameraReady = this.camera
+        .open(this.overlay.video, { facingMode: 'user' })
+        .then(() => {
+          // The preview is live; if the detector is still downloading or
+          // compiling, say that instead of leaving "Starting camera" up.
+          if (!this.landmarker && !this.finished && this.overlay) {
+            this.overlay.chip.textContent = this.t('preparing_detector');
+          }
+        });
+      const detectorReady = loadFaceLandmarker({
+        assetBaseUrl: this.options.assetBaseUrl,
+        modelUrl: this.options.modelUrl,
+        delegate: pinnedCpu ? 'CPU' : undefined,
+      }).then((lm) => {
+        warmUpFaceLandmarker(lm); // shader compile now, not on the first real frame
+        return lm;
+      });
+      const [, landmarker] = await Promise.all([cameraReady, detectorReady]);
       if (this.finished) return;
       this.landmarker = landmarker;
       this.delegateStartedMs = performance.now();
@@ -208,6 +233,7 @@ class LivenessSession {
       this.overlay.canvas.width = video.videoWidth;
       this.overlay.canvas.height = video.videoHeight;
       this.analysisCanvas = document.createElement('canvas');
+      this.detectCanvas = document.createElement('canvas');
 
       this.machine.start();
       this.loop();
@@ -228,7 +254,10 @@ class LivenessSession {
 
     let result: FaceLandmarkerResultLike;
     try {
-      result = landmarker.detectForVideo(video, performance.now()) as FaceLandmarkerResultLike;
+      result = landmarker.detectForVideo(
+        this.detectInputFor(video),
+        performance.now(),
+      ) as FaceLandmarkerResultLike;
     } catch {
       // A broken GPU delegate can THROW on detect instead of returning
       // garbage (same field device, a day later). Same treatment.
@@ -283,6 +312,23 @@ class LivenessSession {
       this.fail(new LivenessFailedError(snapshot.failReason ?? 'unknown'));
     }
   };
+
+  /** Downscaled copy of the current frame for inference (see DETECT_INPUT_MAX_WIDTH). */
+  private detectInputFor(video: HTMLVideoElement): HTMLVideoElement | HTMLCanvasElement {
+    const canvas = this.detectCanvas;
+    if (!canvas || video.videoWidth <= DETECT_INPUT_MAX_WIDTH) return video;
+    const scale = DETECT_INPUT_MAX_WIDTH / video.videoWidth;
+    const w = DETECT_INPUT_MAX_WIDTH;
+    const h = Math.max(1, Math.round(video.videoHeight * scale));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return video;
+    ctx.drawImage(video, 0, 0, w, h);
+    return canvas;
+  }
 
   /** Track one unusable/throwing detector frame; true = give up on delegate. */
   private noteUnusableFrame(): boolean {
@@ -573,6 +619,7 @@ class LivenessSession {
     this.overlay?.destroy();
     this.overlay = null;
     this.analysisCanvas = null;
+    this.detectCanvas = null;
     this.bestCanvas = null;
   }
 }

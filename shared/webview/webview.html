@@ -121,6 +121,19 @@
   var VALID_FLOWS = { documentCapture: true, activeLiveness: true, faceCapture: true };
   var started = false;
 
+  /**
+   * The face-landmark model (3.7 MB). Its public home only allows a 1-hour
+   * cache, so low-end phones re-validated or re-downloaded it every
+   * session; on iapp.co.th it is served next to this page under a
+   * versioned, immutable-cached path instead. The wasm runtime stays on its
+   * CDN: that URL is already immutable and Brotli-compressed at the edge.
+   * A self-hosted copy of this page without vendor/ keeps the defaults.
+   */
+  var SELF_HOSTED = /(^|\.)iapp\.co\.th$/.test(location.hostname);
+  var MODEL_URL = SELF_HOSTED
+    ? new URL('vendor/mediapipe-models/face_landmarker/float16/1/face_landmarker.task', location.href).href
+    : undefined;
+
   /** Serialize + send over the first available native bridge. */
   function post(payload) {
     payload.protocolVersion = PROTOCOL_VERSION;
@@ -249,6 +262,8 @@
     return ekyc.startActiveLiveness({
       mount: mount,
       cues: config.cues || undefined,
+      assetBaseUrl: config.assetBaseUrl || undefined,
+      modelUrl: config.modelUrl || MODEL_URL,
       onState: function (info) {
         post({
           type: 'state', flow: 'activeLiveness',
@@ -282,6 +297,8 @@
     return ekyc.captureFace({
       mount: mount,
       cues: config.cues || undefined,
+      assetBaseUrl: config.assetBaseUrl || undefined,
+      modelUrl: config.modelUrl || MODEL_URL,
       onState: function (state, info) {
         post({
           type: 'state', flow: 'faceCapture', state: String(state),

@@ -18,9 +18,45 @@ const DEFAULT_MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
 
 /** Structural subset of the FaceLandmarker instance we use. */
+export type DetectInput = HTMLVideoElement | HTMLCanvasElement;
+
 export interface FaceLandmarkerLike {
-  detectForVideo(video: HTMLVideoElement, timestampMs: number): unknown;
+  detectForVideo(input: DetectInput, timestampMs: number): unknown;
   close(): void;
+}
+
+/**
+ * The first inference on the GPU delegate compiles the whole shader
+ * pipeline on the main thread — measured at 1.7 s warm / 6.8 s cold on a
+ * Galaxy A12 — and used to land on the first real camera frame, freezing
+ * the preview with the chip stuck on "Starting camera". Running one
+ * inference on a blank frame the moment the landmarker resolves moves
+ * that cost to where it can overlap the camera start-up and a truthful
+ * status message. Best-effort: a throwing delegate is handled by the flow.
+ */
+export function warmUpFaceLandmarker(landmarker: FaceLandmarkerLike): void {
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, 64, 64);
+    landmarker.detectForVideo(canvas, performance.now());
+  } catch {
+    /* the flow's own recovery handles a broken delegate */
+  }
+}
+
+/**
+ * Load and warm up the face detector ahead of time — e.g. when the KYC
+ * screen appears, before the user taps start — so the flow opens with the
+ * ~1-7 s of download + shader compilation already paid. Same shared
+ * instance the flows use; safe to call more than once.
+ */
+export async function preloadFaceDetector(options: LoadFaceLandmarkerOptions = {}): Promise<void> {
+  warmUpFaceLandmarker(await loadFaceLandmarker(options));
 }
 
 interface TasksVisionModuleLike {
@@ -132,7 +168,7 @@ function withSimulatedGpuFault(
     ];
   };
   return {
-    detectForVideo(video: HTMLVideoElement, ts: number) {
+    detectForVideo(video: DetectInput, ts: number) {
       instance.detectForVideo(video, ts); // keep the real per-frame cost
       if (mode === 'throw') throw new Error('simulated GPU detect failure');
       if (mode === 'empty') {

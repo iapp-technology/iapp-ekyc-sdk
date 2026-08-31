@@ -51,5 +51,6 @@
   "turn_left_arrow": "◀ Turn your head LEFT",
   "turn_right_arrow": "Turn your head RIGHT ▶",
   "error_face_detector": "This device's camera could not be used for face detection. Please try another device.",
-  "turn_back": "Now look straight ahead again"
+  "turn_back": "Now look straight ahead again",
+  "preparing_detector": "Preparing face detection…"
 }

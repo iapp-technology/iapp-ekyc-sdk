@@ -3,6 +3,43 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.11] — 2026-08-31
+
+Start-up and per-frame performance, measured on a Galaxy A12 (Android 12,
+Mali-G52) with a timing probe driven over USB: camera open 0.8 s; MediaPipe
+download + init 6.3 s cold / 1.2 s warm; **first GPU inference 6.8 s cold /
+1.7 s warm** (shader compilation, on the main thread, on the first camera
+frame); steady state 222 ms per frame (~4.5 fps) on the GPU, 338-418 ms on
+the CPU. "Starting camera…" was covering all of it.
+
+### Changed
+- **Inference runs on a 640 px-wide copy of the frame**, not the 1080p
+  video. Every detect uploads its input to the GPU; an 8 MB frame per call
+  dominated the per-frame cost on low-end GPUs. The detector works at
+  192-256 px internally, so nothing is lost; landmarks are normalized, so
+  oval geometry and the full-resolution best-frame selfie are untouched.
+- **GPU warm-up runs the moment the landmarker resolves**, overlapping the
+  camera start-up, instead of stalling the first real frame for 1.7-6.8 s
+  with the preview frozen.
+- **Honest status**: once the preview is live but the detector is still
+  downloading or compiling, the chip says "Preparing face detection…"
+  (`preparing_detector`, EN/TH/ZH) instead of "Starting camera…".
+- **The 3.7 MB face-landmark model is self-hosted on iapp.co.th** under a
+  versioned, immutable-cached path (`/sdk/vendor/mediapipe-models/...`):
+  its public home allows only a 1-hour cache, so phones re-validated or
+  re-downloaded it every session (2.7 s of the cold start on the A12). The
+  hosted bridge page and the demo use it; the wasm runtime stays on its
+  CDN, which already serves it immutable and Brotli-compressed (2.9 MB on
+  the wire vs 10.6 MB self-hosted). Self-hosted copies of the bridge page
+  keep the CDN defaults.
+
+### Added
+- `preloadFaceDetector({ assetBaseUrl?, modelUrl? })`: load and warm up the
+  detector ahead of time — when the KYC screen appears, before the user
+  taps start — so the flow opens with the download and shader compilation
+  already paid. Same shared instance the flows use; safe to call repeatedly.
+- `warmUpFaceLandmarker(landmarker)` and the `DetectInput` type.
+
 ## [web 0.2.10 / android + ios guard] — 2026-08-31
 
 ### Added
