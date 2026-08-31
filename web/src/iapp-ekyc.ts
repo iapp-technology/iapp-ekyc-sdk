@@ -12,6 +12,7 @@
  * ```
  */
 import { EkycApiClient, type EkycApiClientOptions } from './core/api-client';
+import { EkycError } from './core/errors';
 import type { Locale } from './core/i18n/i18n';
 import type { EkycTheme } from './core/theme';
 import type {
@@ -45,6 +46,13 @@ export interface IappEkycOptions extends EkycApiClientOptions {
   integration?: SdkIntegration;
 }
 
+export const PLACEHOLDER_API_KEY = 'YOUR_API_KEY';
+export const MISSING_API_KEY_MESSAGE =
+  'IappEkyc: replace "YOUR_API_KEY" with your iApp API key. Sign in at https://iapp.co.th ' +
+  'and create one under Control Panel > API Keys (https://iapp.co.th/control/api-keys); ' +
+  'new accounts include free credits. Then pass it as apiKey — or pass "" with baseUrl ' +
+  'pointing at your own proxy (docs/SECURITY.md).';
+
 export class IappEkyc {
   /** Low-level API client (exposed for advanced integrations/proxies). */
   readonly api: EkycApiClient;
@@ -56,6 +64,12 @@ export class IappEkyc {
   private readonly defaultIntegration?: SdkIntegration;
 
   constructor(options: IappEkycOptions) {
+    // The docs' placeholder reaching production means the sample was pasted
+    // without a key; every flow would run to the end and fail with
+    // INVALID_API_KEY. Fail here, with the fix. ('' stays valid: proxy mode.)
+    if (options.apiKey === PLACEHOLDER_API_KEY) {
+      throw new EkycError(MISSING_API_KEY_MESSAGE, { userMessageKey: 'error_invalid_key' });
+    }
     this.api = new EkycApiClient(options);
     this.face = new FaceApi(this.api);
     this.defaultLocale = options.locale;

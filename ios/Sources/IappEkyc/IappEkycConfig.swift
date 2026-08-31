@@ -69,7 +69,16 @@ public final class IappEkycConfig: NSObject {
     /// be HTTPS (camera requires a secure context).
     @objc public var hostPageURL: URL = iappEkycDefaultHostPageURL
 
+    /// The README placeholder. Passing it means the sample was pasted without a key.
+    @objc public static let placeholderApiKey = "YOUR_API_KEY"
+
     @objc public init(apiKey: String, flow: IappEkycFlowType) {
+        precondition(
+            apiKey != IappEkycConfig.placeholderApiKey,
+            "IappEkycConfig: replace \"YOUR_API_KEY\" with your iApp API key. Sign in at " +
+                "https://iapp.co.th and create one under Control Panel > API Keys " +
+                "(https://iapp.co.th/control/api-keys); new accounts include free credits."
+        )
         self.apiKey = apiKey
         self.flow = flow
         super.init()

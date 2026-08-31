@@ -6,6 +6,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.graphics.Color
 import androidx.activity.ComponentActivity
 import com.iapp.ekyc.EkycDocumentType
 import com.iapp.ekyc.EkycLocale
@@ -17,10 +18,11 @@ import com.iapp.ekyc.IappEkycResult
 /** Kotlin usage: the ActivityResult contract (recommended). */
 class MainActivity : ComponentActivity() {
     private val config: IappEkycConfig by lazy {
-        IappEkycConfig.Builder("YOUR_API_KEY").locale(EkycLocale.EN).build()
+        IappEkycConfig.Builder(BuildConfig.IAPP_API_KEY).locale(EkycLocale.EN).build()
     }
 
     private lateinit var status: TextView
+    private val hasApiKey = ApiKeyGuide.isConfigured(BuildConfig.IAPP_API_KEY)
 
     private val ekyc = registerForActivityResult(IappEkycContract()) { result ->
         status.text = when (result) {
@@ -45,10 +47,21 @@ class MainActivity : ComponentActivity() {
             setPadding(48, 48, 48, 48)
         }
 
+        if (!hasApiKey) {
+            root.addView(TextView(this).apply {
+                text = ApiKeyGuide.TEXT
+                setTextColor(Color.parseColor("#B91C1C"))
+                textSize = 14f
+                setPadding(0, 0, 0, 40)
+            })
+        }
+
         fun button(label: String, onClick: () -> Unit) {
             root.addView(Button(this).apply {
                 text = label
-                setOnClickListener { onClick() }
+                setOnClickListener {
+                    if (hasApiKey) onClick() else status.text = ApiKeyGuide.TEXT
+                }
             })
         }
 

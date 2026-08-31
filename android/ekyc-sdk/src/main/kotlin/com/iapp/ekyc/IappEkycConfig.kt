@@ -50,10 +50,24 @@ class IappEkycConfig private constructor(
 
         fun hostPageUrl(value: String) = apply { hostPageUrl = value }
 
-        fun build() =
-            IappEkycConfig(
+        fun build(): IappEkycConfig {
+            // The README snippets use this literal; passing it through means the
+            // developer pasted the sample without a key. Every flow would run to
+            // the end and then fail with INVALID_API_KEY -- say so up front.
+            require(apiKey != PLACEHOLDER_API_KEY) { MISSING_API_KEY_MESSAGE }
+            return IappEkycConfig(
                 apiKey, baseUrl, timeoutMs, locale, theme, returnSelfieImage, hostPageUrl,
             )
+        }
+    }
+
+    companion object {
+        const val PLACEHOLDER_API_KEY = "YOUR_API_KEY"
+        const val MISSING_API_KEY_MESSAGE =
+            "IappEkycConfig: replace \"YOUR_API_KEY\" with your iApp API key. " +
+                "Sign in at https://iapp.co.th and create one under Control Panel > API Keys " +
+                "(https://iapp.co.th/control/api-keys); new accounts include free credits. " +
+                "Then pass it: IappEkycConfig.Builder(\"iapp_live_...\")"
     }
 }
 

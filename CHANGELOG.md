@@ -3,6 +3,22 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.10 / android + ios guard] — 2026-08-31
+
+### Added
+- **The placeholder `"YOUR_API_KEY"` now fails fast, with the fix.** Every
+  README snippet uses that literal; pasting it unchanged used to run a whole
+  camera flow that died at the very last step with `INVALID_API_KEY`. The
+  web engine constructor, the Android `IappEkycConfig.Builder.build()` and
+  the iOS `IappEkycConfig` initializer now reject it with one message: where
+  to create a key (Control Panel > API Keys, free credits on new accounts)
+  and how to pass it. `""` stays valid on web (proxy mode).
+- **Android example takes the key from the build**:
+  `./gradlew :app:installDebug -PiappApiKey=...` (or `IAPP_API_KEY` env) —
+  no source edits, nothing to commit. Built without a key it shows an
+  on-screen guide (get a key, rebuild with it, pass it in your own app) and
+  the flow buttons repeat the guide instead of launching.
+
 ## [web 0.2.9] — 2026-08-27
 
 ### Fixed

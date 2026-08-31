@@ -13,6 +13,19 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.2.0"
+
+        // Build with your own key without editing source (and without ever
+        // committing it):  ./gradlew :app:installDebug -PiappApiKey=iapp_live_...
+        // or export IAPP_API_KEY=... . Falls back to a placeholder that the
+        // API rejects with INVALID_API_KEY at the final step.
+        val apiKey = (project.findProperty("iappApiKey") as String?)
+            ?: System.getenv("IAPP_API_KEY")
+            ?: "YOUR_API_KEY"
+        buildConfigField("String", "IAPP_API_KEY", "\"$apiKey\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     compileOptions {

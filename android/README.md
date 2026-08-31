@@ -92,4 +92,15 @@ Notes:
   `IappEkyc.clearCache(context)` on app start to sweep leftovers from
   process death.
 - The back button cancels the flow (`IappEkycResult.Cancelled`).
-- Example app: [`example/`](example/) (Kotlin + Java screens).
+- Example app: [`example/`](example/) (Kotlin + Java screens). Run it with
+  your key in one command — no source edits, nothing to commit:
+
+  ```bash
+  cd android/example
+  ./gradlew :app:installDebug -PiappApiKey=iapp_live_...   # or: export IAPP_API_KEY=...
+  ```
+
+  Built without a key, the app shows an on-screen guide (where to get a key,
+  how to pass it) instead of failing with `INVALID_API_KEY` at the end of a
+  flow. The SDK itself refuses the literal `"YOUR_API_KEY"` placeholder with
+  the same guidance, so a pasted sample cannot ship by accident.
