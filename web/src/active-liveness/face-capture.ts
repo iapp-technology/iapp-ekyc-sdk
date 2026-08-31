@@ -104,8 +104,8 @@ const UNUSABLE_MAX_WAIT_MS = 2000;
 /** Inference input width cap (see active-liveness.ts DETECT_INPUT_MAX_WIDTH). */
 const DETECT_INPUT_MAX_WIDTH = 640;
 /** No faces EVER from this delegate -> try CPU (see active-liveness.ts). */
-const NO_DETECTION_CPU_RETRY_MS = 8000;
-const NO_DETECTION_MIN_FRAMES = 10;
+const NO_DETECTION_CPU_RETRY_MS = 12000;
+const NO_DETECTION_MIN_FRAMES = 30;
 
 const STATE_MESSAGE_KEY: Record<FaceCaptureState, string> = {
   initializing: 'initializing',
@@ -482,7 +482,8 @@ class FaceCaptureSession {
     const crop = document.createElement('canvas');
     crop.width = Math.round(cw);
     crop.height = Math.round(ch);
-    const cctx = crop.getContext('2d');
+    // CPU-backed so toBlob never waits on a GPU readback (see active-liveness.ts).
+    const cctx = crop.getContext('2d', { willReadFrequently: true });
     if (!cctx) return;
     cctx.drawImage(video, cx, cy, cw, ch, 0, 0, crop.width, crop.height);
     this.bestCanvas = crop;
@@ -570,7 +571,7 @@ class FaceCaptureSession {
     const canvas = document.createElement('canvas');
     canvas.width = video?.videoWidth ?? 1;
     canvas.height = video?.videoHeight ?? 1;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (ctx && video) ctx.drawImage(video, 0, 0);
     return canvas;
   }

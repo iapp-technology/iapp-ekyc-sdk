@@ -146,6 +146,27 @@ export class EkycApiClient {
     return result;
   }
 
+  /**
+   * Open the TCP+TLS connection to the API before it is needed. A flow
+   * that calls the API once, at the very end, otherwise pays DNS + TCP +
+   * TLS (measured 0.6 s on a phone on LTE) inside its "Verifying" step.
+   * Best-effort: a preconnect hint the browser may ignore.
+   */
+  warmConnection(): void {
+    try {
+      if (typeof document === 'undefined') return;
+      const origin = new URL(this.baseUrl).origin;
+      if (document.querySelector(`link[rel="preconnect"][href="${origin}"]`)) return;
+      const link = document.createElement('link');
+      link.rel = 'preconnect';
+      link.href = origin;
+      link.crossOrigin = 'anonymous'; // same pool as the CORS POST
+      document.head.appendChild(link);
+    } catch {
+      /* hint only */
+    }
+  }
+
   /** Shared multipart POST with timeout + connect-only retry + error mapping. */
   private async postMultipart(
     path: string,

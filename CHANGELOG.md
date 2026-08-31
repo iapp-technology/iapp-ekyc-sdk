@@ -3,6 +3,31 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.12] — 2026-08-31
+
+### Fixed
+- **"Verifying…" spent ~13 s before the request was even sent.** A live
+  trace of the Android example on a Galaxy A12 (DevTools over USB) showed
+  the finalize POST leaving the phone 13.1 s after the chip changed, then
+  completing in 1.4 s (gateway: 215 ms upstream). The only work in that
+  window is JPEG-encoding the selfie canvas. That canvas was GPU-backed, so
+  `toBlob` had to wait for a GPU readback behind the live 1080p preview and
+  the inference context.
+  - Selfie crop and fallback-frame canvases are now CPU-backed
+    (`willReadFrequently`); `toBlob` no longer touches the GPU.
+  - The selfie is encoded **during the final recenter hold**, so
+    "Verifying" starts with the JPEG already in hand (re-encoded only if a
+    better frame arrives afterwards).
+  - `EkycApiClient.warmConnection()` adds a `preconnect` to the API origin
+    at flow start; the finalize request no longer pays DNS + TCP + TLS
+    (measured 0.6 s on LTE) inside "Verifying".
+- **Blind-GPU fallback no longer fires on a slow user.** The
+  no-face-ever swap to the CPU delegate triggered after 8 s when the user
+  simply was not in front of the camera yet — on this device that means
+  ~40% slower inference for the rest of the session. It now needs 12 s and
+  30+ processed frames. A genuinely blind GPU costs that wait once; the
+  persisted pin starts later sessions on CPU directly.
+
 ## [web 0.2.11] — 2026-08-31
 
 Start-up and per-frame performance, measured on a Galaxy A12 (Android 12,

@@ -86,8 +86,8 @@ const UNUSABLE_MAX_WAIT_MS = 2000;
  * frames and not one usable face. Harmless on a healthy device whose user
  * is slow to line up: the swap is silent.
  */
-const NO_DETECTION_CPU_RETRY_MS = 8000;
-const NO_DETECTION_MIN_FRAMES = 10;
+const NO_DETECTION_CPU_RETRY_MS = 12000;
+const NO_DETECTION_MIN_FRAMES = 30;
 
 const CHALLENGE_MESSAGE_KEY: Record<ChallengeType, string> = {
   blink: 'blink_now',
@@ -165,6 +165,8 @@ class LivenessSession {
   private analysisCanvas: HTMLCanvasElement | null = null;
   private detectCanvas: HTMLCanvasElement | null = null;
   private bestCanvas: HTMLCanvasElement | null = null;
+  /** JPEG of `bestCanvas`, started during recenter so finalize does not wait for it. */
+  private pendingSelfie: { canvas: HTMLCanvasElement; blob: Promise<Blob> } | null = null;
   private unusableStreak = 0;
   private unusableSinceMs = 0;
   private delegateStartedMs = 0;
@@ -200,6 +202,7 @@ class LivenessSession {
       this.overlay.chip.textContent = this.t('initializing');
 
       this.camera = new CameraController();
+      this.api.warmConnection(); // the finalize POST should not pay DNS+TLS
       // A device that previously proved its GPU delegate emits garbage
       // starts straight on the CPU delegate (delegate-preference.ts).
       const pinnedCpu = readPersistedCpuPin();
@@ -305,6 +308,17 @@ class LivenessSession {
     const snapshot = this.machine.process(obs);
     this.considerBestFrame(selection, obs, video);
     this.render(snapshot, obs, oval);
+
+    // Encode the selfie while the user holds the final recenter pose, so
+    // "Verifying" starts with the JPEG already in hand. Re-encodes only if
+    // a better frame arrives afterwards.
+    if (
+      snapshot.phase === 'recenter' &&
+      this.bestCanvas &&
+      this.pendingSelfie?.canvas !== this.bestCanvas
+    ) {
+      this.pendingSelfie = { canvas: this.bestCanvas, blob: encodeJpeg(this.bestCanvas) };
+    }
 
     if (snapshot.phase === 'capture') {
       void this.finalize();
@@ -431,7 +445,11 @@ class LivenessSession {
     const crop = document.createElement('canvas');
     crop.width = Math.round(cw);
     crop.height = Math.round(ch);
-    const cctx = crop.getContext('2d');
+    // CPU-backed: this canvas exists to be JPEG-encoded. A GPU-backed one
+    // makes toBlob wait for a GPU readback behind whatever the GPU is doing
+    // (video preview, inference) — measured as a multi-second stall on a
+    // low-end phone. Reading back one frame here costs a few milliseconds.
+    const cctx = crop.getContext('2d', { willReadFrequently: true });
     if (!cctx) return;
     cctx.drawImage(video, cx, cy, cw, ch, 0, 0, crop.width, crop.height);
     this.bestCanvas = crop;
@@ -542,13 +560,10 @@ class LivenessSession {
     if (overlay) overlay.chip.textContent = this.t('finalizing');
     try {
       const source = this.bestCanvas ?? this.fallbackFrame();
-      const selfie = await new Promise<Blob>((res, rej) =>
-        source.toBlob(
-          (b) => (b ? res(b) : rej(new EkycError('JPEG encoding failed'))),
-          'image/jpeg',
-          JPEG_QUALITY,
-        ),
-      );
+      const selfie =
+        this.pendingSelfie?.canvas === source
+          ? await this.pendingSelfie.blob
+          : await encodeJpeg(source);
       this.machine.markFinalizing();
       const log = this.machine.buildChallengeLog(resolveSdkIdentity(this.options.integration));
       // Network/server failure => failed(finalizeError); NEVER retried
@@ -574,7 +589,7 @@ class LivenessSession {
     const canvas = document.createElement('canvas');
     canvas.width = video?.videoWidth ?? 1;
     canvas.height = video?.videoHeight ?? 1;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (ctx && video) ctx.drawImage(video, 0, 0);
     return canvas;
   }
@@ -621,5 +636,17 @@ class LivenessSession {
     this.analysisCanvas = null;
     this.detectCanvas = null;
     this.bestCanvas = null;
+    this.pendingSelfie = null;
   }
+}
+
+/** JPEG-encode a canvas; rejects (never resolves null) on encoder failure. */
+function encodeJpeg(source: HTMLCanvasElement): Promise<Blob> {
+  return new Promise<Blob>((res, rej) =>
+    source.toBlob(
+      (b) => (b ? res(b) : rej(new EkycError('JPEG encoding failed'))),
+      'image/jpeg',
+      JPEG_QUALITY,
+    ),
+  );
 }
