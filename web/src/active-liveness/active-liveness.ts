@@ -404,6 +404,9 @@ class LivenessSession {
         if (obs.count === 0) return 'face_lost';
         if (snapshot.multiFace) return 'multiple_faces';
         const type = snapshot.currentChallenge;
+        if ((type === 'turnLeft' || type === 'turnRight') && snapshot.turnRegistered) {
+          return 'turn_back'; // the turn registered — guide the user home
+        }
         return type ? CHALLENGE_MESSAGE_KEY[type] : 'hold_face';
       }
       case 'recenter':
@@ -470,9 +473,9 @@ class LivenessSession {
       });
     }
     const arrow =
-      snapshot.phase === 'challenge' && snapshot.currentChallenge === 'turnLeft'
+      snapshot.phase === 'challenge' && !snapshot.turnRegistered && snapshot.currentChallenge === 'turnLeft'
         ? ('left' as const)
-        : snapshot.phase === 'challenge' && snapshot.currentChallenge === 'turnRight'
+        : snapshot.phase === 'challenge' && !snapshot.turnRegistered && snapshot.currentChallenge === 'turnRight'
           ? ('right' as const)
           : null;
     drawOvalOverlay(

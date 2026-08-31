@@ -50,5 +50,6 @@
   "no_document_found": "No document detected — position the card in the frame and try again",
   "turn_left_arrow": "◀ Turn your head LEFT",
   "turn_right_arrow": "Turn your head RIGHT ▶",
-  "error_face_detector": "This device's camera could not be used for face detection. Please try another device."
+  "error_face_detector": "This device's camera could not be used for face detection. Please try another device.",
+  "turn_back": "Now look straight ahead again"
 }

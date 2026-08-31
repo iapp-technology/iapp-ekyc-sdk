@@ -365,6 +365,52 @@ describe('ChallengeMachine — turn specifics', () => {
     expect(rig.machine.completedChallenges.map((c) => c.type)).toEqual(['turnRight']);
   });
 
+  it('a contaminated baseline cannot block the turn: absolute fallback', () => {
+    // Field report (Galaxy A12): turnRight issued right after a previous
+    // challenge captured baseline at -11 deg, pushing the delta target to
+    // -29 absolute -- the user held a full turn for ~5 s with nothing
+    // registering. An absolute yaw of 18 deg in the required direction now
+    // counts regardless of baseline.
+    const rig = makeRig({ challengeCount: 1, challengePool: ['turnRight'] });
+    rig.machine.start();
+    rig.frames(face(), 20);
+    expect(rig.machine.state.phase).toBe('challenge');
+    rig.frame(face({ yawDeg: -11 })); // baseline lands at -11
+    rig.frame(face({ yawDeg: -25 })); // delta only -14, but absolute -25
+    expect(rig.machine.state.turnRegistered).toBe(true);
+    rig.frame(face({ yawDeg: 0 }));
+    expect(rig.machine.completedChallenges).toHaveLength(1);
+  });
+
+  it('re-anchors the baseline to the most-frontal pose seen', () => {
+    // Disable the absolute fallback so only re-anchoring can pass.
+    const rig = makeRig({
+      challengeCount: 1,
+      challengePool: ['turnLeft'],
+      turnAbsYawDeg: 99,
+    });
+    rig.machine.start();
+    rig.frames(face(), 20);
+    rig.frame(face({ yawDeg: 11 })); // contaminated baseline +11
+    rig.frame(face({ yawDeg: 0 })); // user passes frontal -> baseline 0
+    rig.frame(face({ yawDeg: 20 })); // delta 20 from re-anchored baseline
+    expect(rig.machine.state.turnRegistered).toBe(true);
+    rig.frame(face({ yawDeg: 0 }));
+    expect(rig.machine.completedChallenges).toHaveLength(1);
+  });
+
+  it('turnRegistered is false before the excursion and after completion', () => {
+    const rig = makeRig({ challengeCount: 1, challengePool: ['turnRight'] });
+    rig.machine.start();
+    rig.frames(face(), 20);
+    expect(rig.machine.state.turnRegistered).toBe(false);
+    rig.frame(face({ yawDeg: -25 }));
+    expect(rig.machine.state.turnRegistered).toBe(true);
+    rig.frame(face({ yawDeg: 0 }));
+    expect(rig.machine.state.phase).toBe('recenter');
+    expect(rig.machine.state.turnRegistered).toBe(false);
+  });
+
   it('turning the WRONG way never completes the challenge', () => {
     const rig = makeRig({ rng: rngFromSequence([0.6, 0, 0]) }); // turnRight
     rig.machine.start();

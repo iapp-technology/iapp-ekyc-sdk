@@ -3,6 +3,26 @@
 All notable changes to the iApp eKYC SDK are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [web 0.2.9] — 2026-08-27
+
+### Fixed
+- **Turn challenges registered seconds late — or not at all — and gave no
+  sign when they did** (field test, Galaxy A12: a full right turn had to be
+  held ~5 s). Two causes:
+  - The turn is a yaw delta from a baseline captured at challenge issue,
+    which right after a previous challenge can sit 10+ degrees off frontal
+    — pushing the target to ~29 absolute degrees, past where low-end
+    devices' yaw estimates compress. The baseline now re-anchors to the
+    most-frontal pose seen since issue, and an ABSOLUTE yaw of 18 degrees
+    in the required direction counts regardless of baseline
+    (`turnAbsYawDeg`). Anti-spoof rigor is unchanged: 18 degrees from true
+    frontal was always the intent.
+  - Once the excursion registered, the UI still showed "turn right" with
+    the arrow — nothing told the user to come back. The machine now exposes
+    `MachineSnapshot.turnRegistered`; the instruction switches to the new
+    `turn_back` message (EN/TH/ZH), the arrow disappears, and the cue
+    sounds — at the exact moment the turn is accepted.
+
 ## [web 0.2.8] — 2026-08-27
 
 ### Changed

@@ -84,6 +84,13 @@ export interface MachineSnapshot {
   restarts: number;
   /** A second person has been in frame for `multiFaceFrames` frames. */
   multiFace: boolean;
+  /**
+   * The current turn challenge's excursion has been accepted; the user
+   * now only needs to look straight again. The UI switches the
+   * instruction on this — without it users held the turn for seconds,
+   * not knowing it had already registered.
+   */
+  turnRegistered: boolean;
   failReason: FailReason | null;
   completedCount: number;
 }
@@ -136,6 +143,15 @@ export interface ChallengeMachineConfig {
   blinkPerEyeDipFrac: number;
   /** turn: yaw delta from baseline >= 18 deg in the required direction. */
   turnYawDeltaDeg: number;
+  /**
+   * turn fallback: an ABSOLUTE yaw of this many degrees in the required
+   * direction also counts. The baseline is captured at challenge issue,
+   * which right after a previous challenge can be 10+ degrees off frontal;
+   * a contaminated baseline pushed the delta target to ~29 absolute
+   * degrees, past where low-end devices' yaw estimates compress — users
+   * held a full turn for seconds with nothing registering.
+   */
+  turnAbsYawDeg: number;
   /** turn: then return to |yaw| < 12 deg to complete. */
   turnReturnAbsYawBelowDeg: number;
   /** smile: smile >= 0.45 (max of mouthSmileLeft/Right, see face-metrics) ... */
@@ -186,6 +202,7 @@ export const DEFAULT_CHALLENGE_MACHINE_CONFIG: Omit<ChallengeMachineConfig, 'rng
   blinkClosedCeil: 0.55,
   blinkPerEyeDipFrac: 0.85,
   turnYawDeltaDeg: 18,
+  turnAbsYawDeg: 18,
   turnReturnAbsYawBelowDeg: 12,
   smileAbove: 0.45,
   smileHoldMs: 350,
@@ -350,6 +367,7 @@ export class ChallengeMachine {
       currentChallenge: this.current?.type ?? null,
       restarts: this.current?.restarts ?? 0,
       multiFace: this.multiFaceConfirmed,
+      turnRegistered: this.current?.turned ?? false,
       failReason: this.failReason,
       completedCount: this.completed.length,
     };
@@ -493,7 +511,14 @@ export class ChallengeMachine {
 
     this.lastFaceSeenAt = t;
     this.updateEyeBaseline(obs);
+    // Baseline = the most-frontal yaw seen since issue. The first frame
+    // after issue can still carry the previous challenge's return swing;
+    // re-anchoring as the user passes through frontal keeps the delta
+    // target honest.
     if (cur.baselineYaw === null) cur.baselineYaw = obs.yawDeg;
+    else if (Math.abs(obs.yawDeg) < Math.abs(cur.baselineYaw)) {
+      cur.baselineYaw = obs.yawDeg;
+    }
 
     let completedNow = false;
     switch (cur.type) {
@@ -545,8 +570,8 @@ export class ChallengeMachine {
         const delta = obs.yawDeg - baseline;
         const reached =
           cur.type === 'turnLeft'
-            ? delta >= this.cfg.turnYawDeltaDeg
-            : delta <= -this.cfg.turnYawDeltaDeg;
+            ? delta >= this.cfg.turnYawDeltaDeg || obs.yawDeg >= this.cfg.turnAbsYawDeg
+            : delta <= -this.cfg.turnYawDeltaDeg || obs.yawDeg <= -this.cfg.turnAbsYawDeg;
         if (!cur.turned && reached) {
           cur.turned = true;
         } else if (cur.turned && Math.abs(obs.yawDeg) < this.cfg.turnReturnAbsYawBelowDeg) {

@@ -50,5 +50,6 @@
   "no_document_found": "未检测到证件，请将证件对准框内后重试",
   "turn_left_arrow": "◀ 请向左转头",
   "turn_right_arrow": "请向右转头 ▶",
-  "error_face_detector": "此设备无法用于人脸检测，请更换设备重试。"
+  "error_face_detector": "此设备无法用于人脸检测，请更换设备重试。",
+  "turn_back": "请转回并正视镜头"
 }
